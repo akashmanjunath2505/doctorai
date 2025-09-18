@@ -2,6 +2,7 @@ import { useState, useRef, useCallback } from 'react';
 
 export const useAudioRecorder = () => {
     const [isRecording, setIsRecording] = useState(false);
+    const [isPaused, setIsPaused] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const mediaRecorderRef = useRef<MediaRecorder | null>(null);
     const audioChunksRef = useRef<Blob[]>([]);
@@ -24,15 +25,14 @@ export const useAudioRecorder = () => {
                 if (event.data.size > 0) {
                     audioChunksRef.current.push(event.data);
                     if (onChunk) {
-                        // For streaming mode, call the handler with the new chunk
                         onChunk(event.data);
                     }
                 }
             };
 
-            // If onChunk is provided, start the recorder in timeslice mode to get periodic chunks
             recorder.start(onChunk ? timeslice || 2500 : undefined);
             setIsRecording(true);
+            setIsPaused(false);
         } catch (err) {
             console.error('Microphone access error:', err);
             setError('Microphone access denied. Please allow microphone access in your browser settings.');
@@ -60,6 +60,7 @@ export const useAudioRecorder = () => {
                 mediaRecorderRef.current = null;
                 audioChunksRef.current = [];
                 setIsRecording(false);
+                setIsPaused(false);
 
                 resolve(audioBlob.size > 0 ? audioBlob : null);
             };
@@ -75,5 +76,19 @@ export const useAudioRecorder = () => {
         });
     }, []);
 
-    return { isRecording, startRecording, stopRecording, error };
+    const pauseRecording = useCallback(() => {
+        if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+            mediaRecorderRef.current.pause();
+            setIsPaused(true);
+        }
+    }, []);
+
+    const resumeRecording = useCallback(() => {
+        if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'paused') {
+            mediaRecorderRef.current.resume();
+            setIsPaused(false);
+        }
+    }, []);
+
+    return { isRecording, isPaused, startRecording, stopRecording, pauseRecording, resumeRecording, error };
 };

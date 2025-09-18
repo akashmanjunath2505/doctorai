@@ -19,14 +19,11 @@ const languageToCodeMap: Record<string, string> = {
     'Hindi': 'hi-IN',
 };
 
-// Helper to convert blob to base64 for API transport
+// Helper to convert blob to base64
 const blobToBase64 = (blob: Blob): Promise<string> => {
     return new Promise((resolve, reject) => {
         const reader = new FileReader();
         reader.onloadend = () => {
-            if (typeof reader.result !== 'string') {
-                return reject(new Error('File could not be read as a string.'));
-            }
             const base64data = reader.result as string;
             // remove the prefix e.g. "data:audio/webm;base64,"
             resolve(base64data.substring(base64data.indexOf(',') + 1));
@@ -44,19 +41,13 @@ export const VedaSessionView: React.FC<VedaSessionViewProps> = ({ onEndSession, 
     const [insights, setInsights] = useState<VedaInsightBlock[]>([]);
     const [isVedaSpeaking, setIsVedaSpeaking] = useState(false);
     const [isDiarizing, setIsDiarizing] = useState(false);
-    const [error, setError] = useState<string | null>(null);
-
-    // States for the robust recording mechanism
-    const [isScribing, setIsScribing] = useState(false);
     const [isTranscribing, setIsTranscribing] = useState(false);
-    const [accumulatedTranscript, setAccumulatedTranscript] = useState("");
-    
+    const [error, setError] = useState<string | null>(null);
+    const [aggregatedTranscript, setAggregatedTranscript] = useState('');
+
     const audioRef = useRef<HTMLAudioElement | null>(null);
     const transcriptEndRef = useRef<HTMLDivElement | null>(null);
-    const insightTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-    const diarizationTimer = useRef<NodeJS.Timeout | null>(null);
-    const lastProcessedTranscript = useRef<string>("");
-    const wasScribingBeforeVedaSpoke = useRef(false);
+    const insightTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const transcriptHistoryRef = useRef(transcriptHistory);
     
     useEffect(() => {
@@ -64,7 +55,20 @@ export const VedaSessionView: React.FC<VedaSessionViewProps> = ({ onEndSession, 
     }, [transcriptHistory]);
 
     const langCode = languageToCodeMap[language] || 'en-IN';
-    const { startRecording, stopRecording, error: recorderError } = useAudioRecorder();
+
+    const { 
+        isRecording, 
+        startRecording, 
+        stopRecording, 
+        pauseRecording,
+        resumeRecording,
+        error: recorderError 
+    } = useAudioRecorder();
+
+    useEffect(() => {
+        if(recorderError) setError(recorderError);
+    }, [recorderError]);
+
 
     const fetchInsights = useCallback(async () => {
         const fullTranscript = transcriptHistoryRef.current
@@ -85,19 +89,33 @@ export const VedaSessionView: React.FC<VedaSessionViewProps> = ({ onEndSession, 
         }
     }, [doctorProfile, language]);
     
+    const processAudioChunk = useCallback(async (blob: Blob) => {
+        if (blob.size < 1000 || isTranscribing) return; 
+        setIsTranscribing(true);
+        try {
+            const base64Audio = await blobToBase64(blob);
+            const transcribedText = await transcribeAudio(base64Audio, blob.type || 'audio/webm');
+            if (transcribedText) {
+                setAggregatedTranscript(prev => prev + transcribedText + ' ');
+            }
+        } catch (e) {
+            console.error(e);
+            setError("Transcription failed. This could be a connection issue or a problem with the AI service.");
+        } finally {
+            setIsTranscribing(false);
+        }
+    }, [isTranscribing]);
+
     const handleWakeWord = useCallback(async (text: string) => {
         setIsVedaSpeaking(true);
-        if (isScribing) {
-             wasScribingBeforeVedaSpoke.current = true;
-             stopRecording();
-             setIsScribing(false);
+        if (isRecording) {
+            pauseRecording();
         }
 
-        const restartSequence = () => {
+        const resumeSequence = () => {
             setIsVedaSpeaking(false);
-            if (wasScribingBeforeVedaSpoke.current) {
-                handleToggleScribing(); // This will restart scribing
-                wasScribingBeforeVedaSpoke.current = false;
+            if (isRecording) {
+                resumeRecording();
             }
         };
 
@@ -110,23 +128,22 @@ export const VedaSessionView: React.FC<VedaSessionViewProps> = ({ onEndSession, 
             audioRef.current.src = audioSrc;
             audioRef.current.play().catch(e => {
                 console.error("Audio playback error", e);
-                restartSequence();
+                resumeSequence();
             });
-            audioRef.current.onended = restartSequence;
+            audioRef.current.onended = resumeSequence;
             audioRef.current.onerror = () => {
                 console.error("Audio element error");
-                restartSequence();
+                resumeSequence();
             };
         } else {
             console.error("Failed to get audio source from TTS API.");
-            restartSequence();
+            resumeSequence();
         }
-    }, [doctorProfile, language, langCode, isScribing, stopRecording]);
+    }, [doctorProfile, language, langCode, isRecording, pauseRecording, resumeRecording]);
 
      const handleDiarization = useCallback(async (chunk: string) => {
         if (!chunk) return;
         setIsDiarizing(true);
-        setError(null);
 
         const history = transcriptHistoryRef.current.slice(-5).map(t => `${t.speaker}: ${t.text}`).join('\n');
         const diarizedChunks = await diarizeTranscriptChunk(chunk, history, language);
@@ -145,59 +162,37 @@ export const VedaSessionView: React.FC<VedaSessionViewProps> = ({ onEndSession, 
         setIsDiarizing(false);
     }, [language]);
 
-    // Callback to handle real-time audio chunks from the recorder
-    const handleAudioChunk = useCallback(async (audioBlob: Blob) => {
-        if (!audioBlob || audioBlob.size === 0) return;
 
-        setIsTranscribing(true);
-        try {
-            const base64Audio = await blobToBase64(audioBlob);
-            const transcribedText = await transcribeAudio(base64Audio, audioBlob.type);
-            if (transcribedText) {
-                setAccumulatedTranscript(prev => (prev ? prev + ' ' : '') + transcribedText);
-            }
-        } catch (err) {
-            console.error("Transcription failed", err);
-            setError("Failed to transcribe audio. Please check your connection.");
-        } finally {
-            setIsTranscribing(false);
-        }
-    }, []);
-    
-    const handleToggleScribing = useCallback(() => {
-        setIsScribing(currentIsScribing => {
-            if (currentIsScribing) {
-                stopRecording();
-                return false;
-            } else {
-                setError(null);
-                startRecording({ onChunk: handleAudioChunk, timeslice: 2500 });
-                return true;
-            }
-        });
-    }, [startRecording, stopRecording, handleAudioChunk]);
-
-    // Effect to process newly transcribed text for diarization or wake word
     useEffect(() => {
-        if (accumulatedTranscript.length > lastProcessedTranscript.current.length) {
-            if (diarizationTimer.current) clearTimeout(diarizationTimer.current);
+        if (aggregatedTranscript && !isVedaSpeaking) {
+            const chunkToProcess = aggregatedTranscript;
+            setAggregatedTranscript(''); 
 
-            diarizationTimer.current = setTimeout(() => {
-                const newChunk = accumulatedTranscript.substring(lastProcessedTranscript.current.length).trim();
-                const lowerChunk = newChunk.toLowerCase();
-
-                if (newChunk && !isVedaSpeaking) {
-                     if (lowerChunk.includes('veda')) {
-                        handleWakeWord(newChunk);
-                    } else {
-                        handleDiarization(newChunk);
-                    }
-                    lastProcessedTranscript.current = accumulatedTranscript;
-                }
-            }, 1800); // Wait for a pause in transcription before processing
+            const lowerChunk = chunkToProcess.toLowerCase();
+            if (lowerChunk.includes('veda')) {
+                handleWakeWord(chunkToProcess);
+            } else {
+                handleDiarization(chunkToProcess);
+            }
         }
-    }, [accumulatedTranscript, handleDiarization, handleWakeWord, isVedaSpeaking]);
+    }, [aggregatedTranscript, handleDiarization, handleWakeWord, isVedaSpeaking]);
     
+    
+    const handleToggleScribing = useCallback(async () => {
+        if (isRecording) {
+            const finalBlob = await stopRecording();
+            if (finalBlob) {
+                processAudioChunk(finalBlob);
+            }
+        } else {
+            setError(null);
+            startRecording({ 
+                onChunk: processAudioChunk,
+                timeslice: 4000 // Send audio every 4 seconds
+            });
+        }
+    }, [isRecording, startRecording, stopRecording, processAudioChunk]);
+
     useEffect(() => {
         if (transcriptHistory.length > 0 && !isDiarizing) {
             if (insightTimeoutRef.current) clearTimeout(insightTimeoutRef.current);
@@ -211,16 +206,27 @@ export const VedaSessionView: React.FC<VedaSessionViewProps> = ({ onEndSession, 
         transcriptEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }, [transcriptHistory]);
 
-    useEffect(() => {
-        if(recorderError) setError(recorderError);
-    }, [recorderError]);
     
     // Ensure recording stops on component unmount
     useEffect(() => {
         return () => {
-            stopRecording();
+           stopRecording();
         }
     }, [stopRecording]);
+
+    const getStatusText = () => {
+        if (isVedaSpeaking) return <p className="text-purple-400 italic animate-pulse">Veda is speaking...</p>;
+        if (isTranscribing) return <p className="text-yellow-400 italic">Analyzing audio...</p>;
+        if (isDiarizing) return (
+            <div className="flex items-center gap-2 text-yellow-400 italic">
+                <div className="w-4 h-4 border-2 border-t-transparent border-yellow-400 rounded-full animate-spin"></div>
+                Analyzing conversation...
+            </div>
+        );
+        if (isRecording) return <p className="text-gray-400 italic">Listening...</p>;
+        return <p className="text-gray-500">Click the microphone to start transcribing</p>;
+    }
+
 
     return (
         <div className="flex flex-col h-full w-full bg-aivana-dark animate-fadeInUp">
@@ -257,10 +263,16 @@ export const VedaSessionView: React.FC<VedaSessionViewProps> = ({ onEndSession, 
                 {/* Insights Panel */}
                 <aside className="w-full md:w-1/3 bg-aivana-dark-sider p-4 border-l border-aivana-light-grey flex flex-col overflow-y-auto">
                     <h2 className="text-lg font-semibold mb-4 text-white">Veda's Insights</h2>
-                     {insights.length === 0 && (
+                     {insights.length === 0 && !isRecording && (
                         <div className="flex-1 flex flex-col items-center justify-center text-center text-gray-500">
                             <Icon name="waveform" className="w-8 h-8 mb-2" />
-                            <p>Insights will appear here as the conversation progresses.</p>
+                            <p>Start the session to see real-time insights.</p>
+                        </div>
+                    )}
+                     {insights.length === 0 && isRecording && (
+                        <div className="flex-1 flex flex-col items-center justify-center text-center text-gray-500">
+                            <Icon name="spinner" className="w-8 h-8 mb-2 animate-pulse" />
+                            <p>Listening for key information...</p>
                         </div>
                     )}
                     <div className="space-y-4">
@@ -280,33 +292,17 @@ export const VedaSessionView: React.FC<VedaSessionViewProps> = ({ onEndSession, 
              {/* Footer / Controls */}
             <footer className="flex flex-col p-4 border-t border-aivana-light-grey items-center justify-center">
                 {error && <div className="text-red-400 p-2 text-center bg-red-900/50 rounded-md text-sm mb-2 max-w-xl">{error}</div>}
-                 <div className="h-8 mb-2 flex items-center justify-center text-sm">
-                    {isVedaSpeaking ? (
-                         <p className="text-purple-400 italic animate-pulse">Veda is speaking...</p>
-                    ) : isTranscribing ? (
-                         <div className="flex items-center gap-2 text-cyan-400 italic">
-                            <div className="w-4 h-4 border-2 border-t-transparent border-cyan-400 rounded-full animate-spin"></div>
-                            Transcribing audio...
-                        </div>
-                    ) : isDiarizing ? (
-                        <div className="flex items-center gap-2 text-yellow-400 italic">
-                            <div className="w-4 h-4 border-2 border-t-transparent border-yellow-400 rounded-full animate-spin"></div>
-                            Analyzing conversation...
-                        </div>
-                    ) : isScribing ? (
-                        <p className="text-gray-400 animate-pulse">Listening...</p>
-                    ) : (
-                         <p className="text-gray-500">Click the microphone to start scribing</p>
-                    )}
+                 <div className="h-8 mb-2 flex items-center justify-center text-sm text-center">
+                    {getStatusText()}
                 </div>
                 <button
                     onClick={handleToggleScribing}
                     disabled={isVedaSpeaking}
                     className="relative w-20 h-20 rounded-full bg-aivana-accent flex items-center justify-center text-white transition-all duration-300 ease-in-out focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-aivana-dark focus:ring-purple-400 disabled:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed"
-                    aria-label={isScribing ? 'Stop Scribing' : 'Start Scribing'}
+                    aria-label={isRecording ? 'Stop Transcribing' : 'Start Transcribing'}
                 >
-                    {isScribing && <span className="absolute inset-0 rounded-full bg-aivana-accent animate-pulseRing" style={{animationDelay: '1s'}}></span>}
-                    <Icon name={isScribing ? 'stopCircle' : 'microphone'} className="w-8 h-8 z-10" />
+                    {isRecording && <span className="absolute inset-0 rounded-full bg-aivana-accent animate-pulseRing" style={{animationDelay: '1s'}}></span>}
+                    <Icon name={isRecording ? 'stopCircle' : 'microphone'} className="w-8 h-8 z-10" />
                 </button>
             </footer>
         </div>
