@@ -141,11 +141,12 @@ export const VedaSessionView: React.FC<VedaSessionViewProps> = ({ onEndSession, 
             return;
         }
 
-        let transcribedText = '';
+        let processingStage = 'pending'; // Use a local variable to track stage reliably
         try {
+            processingStage = 'transcribing';
             setIsTranscribing(true);
             const base64Audio = await blobToBase64(blob);
-            transcribedText = await transcribeAudio(base64Audio, blob.type || 'audio/webm');
+            const transcribedText = await transcribeAudio(base64Audio, blob.type || 'audio/webm');
             setIsTranscribing(false);
 
             if (!transcribedText || transcribedText.trim().length === 0) {
@@ -158,6 +159,7 @@ export const VedaSessionView: React.FC<VedaSessionViewProps> = ({ onEndSession, 
             if (lowerChunk.includes('veda')) {
                 await handleWakeWord(transcribedText);
             } else {
+                processingStage = 'diarizing';
                 setIsDiarizing(true);
                 const history = transcriptHistoryRef.current.slice(-5).map(t => `${t.speaker}: ${t.text}`).join('\n');
                 const diarizedChunks = await diarizeTranscriptChunk(transcribedText, history, language);
@@ -177,13 +179,15 @@ export const VedaSessionView: React.FC<VedaSessionViewProps> = ({ onEndSession, 
             }
         } catch (e: any) {
             console.error("Audio processing pipeline error:", e);
-            if (isTranscribing) {
+            // Use the local stage variable for more reliable error reporting
+            if (processingStage === 'transcribing') {
                  setError("Transcription failed. This could be a connection issue or a problem with the AI service.");
-            } else if (isDiarizing) {
+            } else if (processingStage === 'diarizing') {
                  setError("Diarization failed. There was an issue analyzing the conversation.");
             } else {
                  setError("An unexpected error occurred during audio processing.");
             }
+            // Ensure states are reset on error
             setIsTranscribing(false);
             setIsDiarizing(false);
         } finally {
