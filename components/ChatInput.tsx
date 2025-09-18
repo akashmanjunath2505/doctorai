@@ -6,6 +6,7 @@ import { useAudioRecorder } from '../hooks/useAudioRecorder';
 interface ChatInputProps {
     onSendMessage: (message: string) => void;
     isSending: boolean;
+    language: string;
     onPlayLastMessage?: () => void;
     isTtsPlaying?: boolean;
     canPlayTts?: boolean;
@@ -30,6 +31,7 @@ const blobToBase64 = (blob: Blob): Promise<string> => {
 export const ChatInput: React.FC<ChatInputProps> = ({
     onSendMessage,
     isSending,
+    language,
     onPlayLastMessage,
     isTtsPlaying,
     canPlayTts,
@@ -67,7 +69,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
             setIsTranscribing(true);
             try {
                 const base64Audio = await blobToBase64(audioBlob);
-                const transcribedText = await transcribeAudio(base64Audio, audioBlob.type);
+                const transcribedText = await transcribeAudio(base64Audio, audioBlob.type, language);
                 setMessage(prev => prev.length > 0 ? `${prev} ${transcribedText}` : transcribedText);
                 
                 if (textareaRef.current) {

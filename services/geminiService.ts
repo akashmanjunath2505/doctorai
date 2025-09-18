@@ -127,7 +127,7 @@ const JSON_SCHEMAS: Record<string, object> = {
     }
 };
 
-export async function transcribeAudio(base64Audio: string, mimeType: string): Promise<string> {
+export async function transcribeAudio(base64Audio: string, mimeType: string, language: string): Promise<string> {
     try {
         const audioPart = {
             inlineData: {
@@ -135,7 +135,7 @@ export async function transcribeAudio(base64Audio: string, mimeType: string): Pr
                 mimeType: mimeType,
             },
         };
-        const textPart = { text: "Transcribe the following audio recording accurately." };
+        const textPart = { text: `Transcribe the following audio recording accurately. The spoken language is ${language}.` };
 
         const response = await ai.models.generateContent({
             model: 'gemini-2.5-flash',

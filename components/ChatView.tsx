@@ -24,7 +24,7 @@ interface ChatViewProps {
 }
 
 const languageToCodeMap: Record<string, string> = {
-    'English': 'en-US',
+    'English': 'en-IN',
     'Marathi': 'mr-IN',
     'Hindi': 'hi-IN',
 };
@@ -70,7 +70,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
         audioRef.current.pause();
         setPlayingMessageId(message.id); 
 
-        const langCode = languageToCodeMap[language] || 'en-US';
+        const langCode = languageToCodeMap[language] || 'en-IN';
         const audioSrc = await synthesizeSpeech(message.text, langCode);
 
         if (audioSrc && audioRef.current) {
@@ -217,6 +217,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
               <ChatInput 
                 onSendMessage={handleSendMessageOnWelcome} 
                 isSending={isSending} 
+                language={language}
               />
           </div>
       </div>
@@ -244,6 +245,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
             onPlayLastMessage={handlePlayLastMessage}
             isTtsPlaying={!!lastAiMessage && playingMessageId === lastAiMessage.id}
             canPlayTts={!!lastAiMessage}
+            language={language}
         />
       </div>
     </div>
