@@ -139,8 +139,7 @@ export async function transcribeAudio(base64Audio: string, mimeType: string): Pr
 
         const response = await ai.models.generateContent({
             model: 'gemini-2.5-flash',
-            // FIX: The `contents` field for a multi-modal request should be an array of Content objects.
-            contents: [{ parts: [textPart, audioPart] }],
+            contents: { parts: [textPart, audioPart] },
         });
 
         return response.text;
