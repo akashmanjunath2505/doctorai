@@ -43,12 +43,15 @@ export const VedaSessionView: React.FC<VedaSessionViewProps> = ({ onEndSession, 
     const [isDiarizing, setIsDiarizing] = useState(false);
     const [isTranscribing, setIsTranscribing] = useState(false);
     const [error, setError] = useState<string | null>(null);
-    const [aggregatedTranscript, setAggregatedTranscript] = useState('');
 
     const audioRef = useRef<HTMLAudioElement | null>(null);
     const transcriptEndRef = useRef<HTMLDivElement | null>(null);
     const insightTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const transcriptHistoryRef = useRef(transcriptHistory);
+    
+    // Refs for robust audio processing pipeline
+    const audioQueueRef = useRef<Blob[]>([]);
+    const isProcessingQueueRef = useRef(false);
     
     useEffect(() => {
         transcriptHistoryRef.current = transcriptHistory;
@@ -89,23 +92,6 @@ export const VedaSessionView: React.FC<VedaSessionViewProps> = ({ onEndSession, 
         }
     }, [doctorProfile, language]);
     
-    const processAudioChunk = useCallback(async (blob: Blob) => {
-        if (blob.size < 1000 || isTranscribing) return; 
-        setIsTranscribing(true);
-        try {
-            const base64Audio = await blobToBase64(blob);
-            const transcribedText = await transcribeAudio(base64Audio, blob.type || 'audio/webm');
-            if (transcribedText) {
-                setAggregatedTranscript(prev => prev + transcribedText + ' ');
-            }
-        } catch (e) {
-            console.error(e);
-            setError("Transcription failed. This could be a connection issue or a problem with the AI service.");
-        } finally {
-            setIsTranscribing(false);
-        }
-    }, [isTranscribing]);
-
     const handleWakeWord = useCallback(async (text: string) => {
         setIsVedaSpeaking(true);
         if (isRecording) {
@@ -141,57 +127,95 @@ export const VedaSessionView: React.FC<VedaSessionViewProps> = ({ onEndSession, 
         }
     }, [doctorProfile, language, langCode, isRecording, pauseRecording, resumeRecording]);
 
-     const handleDiarization = useCallback(async (chunk: string) => {
-        if (!chunk) return;
-        setIsDiarizing(true);
-
-        const history = transcriptHistoryRef.current.slice(-5).map(t => `${t.speaker}: ${t.text}`).join('\n');
-        const diarizedChunks = await diarizeTranscriptChunk(chunk, history, language);
-        
-        if (diarizedChunks) {
-            const newEntries: TranscriptEntry[] = diarizedChunks.map((c, i) => ({
-                id: `entry-${Date.now()}-${i}`,
-                speaker: c.speaker,
-                text: c.text,
-                isProcessing: false,
-            }));
-            setTranscriptHistory(prev => [...prev, ...newEntries]);
-        } else {
-             setError("Could not analyze the conversation. Please try again.");
+    const processAudioQueue = useCallback(async () => {
+        if (isProcessingQueueRef.current || audioQueueRef.current.length === 0 || isVedaSpeaking) {
+            return;
         }
-        setIsDiarizing(false);
-    }, [language]);
 
+        isProcessingQueueRef.current = true;
+        setError(null);
 
-    useEffect(() => {
-        if (aggregatedTranscript && !isVedaSpeaking) {
-            const chunkToProcess = aggregatedTranscript;
-            setAggregatedTranscript(''); 
+        const blob = audioQueueRef.current.shift();
+        if (!blob) {
+            isProcessingQueueRef.current = false;
+            return;
+        }
 
-            const lowerChunk = chunkToProcess.toLowerCase();
+        let transcribedText = '';
+        try {
+            setIsTranscribing(true);
+            const base64Audio = await blobToBase64(blob);
+            transcribedText = await transcribeAudio(base64Audio, blob.type || 'audio/webm');
+            setIsTranscribing(false);
+
+            if (!transcribedText || transcribedText.trim().length === 0) {
+                isProcessingQueueRef.current = false;
+                if (audioQueueRef.current.length > 0) setTimeout(processAudioQueue, 100);
+                return;
+            }
+
+            const lowerChunk = transcribedText.toLowerCase();
             if (lowerChunk.includes('veda')) {
-                handleWakeWord(chunkToProcess);
+                await handleWakeWord(transcribedText);
             } else {
-                handleDiarization(chunkToProcess);
+                setIsDiarizing(true);
+                const history = transcriptHistoryRef.current.slice(-5).map(t => `${t.speaker}: ${t.text}`).join('\n');
+                const diarizedChunks = await diarizeTranscriptChunk(transcribedText, history, language);
+                
+                if (diarizedChunks) {
+                    const newEntries: TranscriptEntry[] = diarizedChunks.map((c, i) => ({
+                        id: `entry-${Date.now()}-${i}`,
+                        speaker: c.speaker,
+                        text: c.text,
+                        isProcessing: false,
+                    }));
+                    setTranscriptHistory(prev => [...prev, ...newEntries]);
+                } else {
+                     setError("Diarization failed. Could not analyze the conversation chunk.");
+                }
+                setIsDiarizing(false);
+            }
+        } catch (e: any) {
+            console.error("Audio processing pipeline error:", e);
+            if (isTranscribing) {
+                 setError("Transcription failed. This could be a connection issue or a problem with the AI service.");
+            } else if (isDiarizing) {
+                 setError("Diarization failed. There was an issue analyzing the conversation.");
+            } else {
+                 setError("An unexpected error occurred during audio processing.");
+            }
+            setIsTranscribing(false);
+            setIsDiarizing(false);
+        } finally {
+            isProcessingQueueRef.current = false;
+            if (audioQueueRef.current.length > 0) {
+                setTimeout(processAudioQueue, 100);
             }
         }
-    }, [aggregatedTranscript, handleDiarization, handleWakeWord, isVedaSpeaking]);
-    
-    
+    }, [language, handleWakeWord, isVedaSpeaking]);
+
+    const handleAudioChunk = useCallback((blob: Blob) => {
+        if (blob.size < 1000) return;
+        audioQueueRef.current.push(blob);
+        processAudioQueue();
+    }, [processAudioQueue]);
+
     const handleToggleScribing = useCallback(async () => {
         if (isRecording) {
             const finalBlob = await stopRecording();
             if (finalBlob) {
-                processAudioChunk(finalBlob);
+                handleAudioChunk(finalBlob);
             }
         } else {
             setError(null);
+            audioQueueRef.current = [];
+            isProcessingQueueRef.current = false;
             startRecording({ 
-                onChunk: processAudioChunk,
-                timeslice: 4000 // Send audio every 4 seconds
+                onChunk: handleAudioChunk,
+                timeslice: 4000
             });
         }
-    }, [isRecording, startRecording, stopRecording, processAudioChunk]);
+    }, [isRecording, startRecording, stopRecording, handleAudioChunk]);
 
     useEffect(() => {
         if (transcriptHistory.length > 0 && !isDiarizing) {
@@ -216,13 +240,14 @@ export const VedaSessionView: React.FC<VedaSessionViewProps> = ({ onEndSession, 
 
     const getStatusText = () => {
         if (isVedaSpeaking) return <p className="text-purple-400 italic animate-pulse">Veda is speaking...</p>;
-        if (isTranscribing) return <p className="text-yellow-400 italic">Analyzing audio...</p>;
-        if (isDiarizing) return (
-            <div className="flex items-center gap-2 text-yellow-400 italic">
-                <div className="w-4 h-4 border-2 border-t-transparent border-yellow-400 rounded-full animate-spin"></div>
-                Analyzing conversation...
-            </div>
-        );
+        if (isProcessingQueueRef.current || isTranscribing || isDiarizing) {
+             return (
+                <div className="flex items-center gap-2 text-yellow-400 italic">
+                    <div className="w-4 h-4 border-2 border-t-transparent border-yellow-400 rounded-full animate-spin"></div>
+                    Processing audio...
+                </div>
+            );
+        }
         if (isRecording) return <p className="text-gray-400 italic">Listening...</p>;
         return <p className="text-gray-500">Click the microphone to start transcribing</p>;
     }
