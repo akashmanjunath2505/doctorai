@@ -103,3 +103,9 @@ export interface TranscriptEntry {
     text: string;
     isProcessing?: boolean;
 }
+
+export interface PromptInsight {
+    keyTerms: string[];
+    suggestions: string[];
+    followUps: string[];
+}

@@ -35,6 +35,7 @@ export const Icon: React.FC<IconProps> = ({ name, className = 'w-5 h-5' }) => {
     waveform: <path strokeLinecap="round" strokeLinejoin="round" d="M3 12h3l3-9 3 18 3-9h3" />,
     spinner: <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v.01M12 12v.01M12 18v.01M16 12h.01M8 12h.01" />,
     keyboard: <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />,
+    lightbulb: <path strokeLinecap="round" strokeLinejoin="round" d="M12 18.75a6 6 0 006-6c0-4-3.5-7.5-6-7.5s-6 3.5-6 7.5c0 2.25 1.125 4.25 2.875 5.438M12 18.75V21m-3.75-3.75H15.75" />,
   };
 
   return (

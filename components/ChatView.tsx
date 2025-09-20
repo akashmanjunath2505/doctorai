@@ -1,12 +1,13 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { Chat, Message, UserRole, PreCodedGpt, DoctorProfile } from '../types';
+import { Chat, Message, UserRole, PreCodedGpt, DoctorProfile, PromptInsight } from '../types';
 import { ChatInput } from './ChatInput';
 import { ChatMessage } from './ChatMessage';
 import { Icon } from './Icon';
 import { PRE_CODED_GPTS } from '../constants';
-import { streamChatResponse } from '../services/geminiService';
+import { streamChatResponse, getPromptInsights } from '../services/geminiService';
 import { synthesizeSpeech } from '../services/googleTtsService';
 import { Content } from '@google/genai';
+import { PromptInsightsPanel } from './PromptInsightsPanel';
 
 interface ChatViewProps {
   chat: Chat | null;
@@ -21,6 +22,8 @@ interface ChatViewProps {
   doctorProfile: DoctorProfile;
   pendingFirstMessage: string | null;
   setPendingFirstMessage: (message: string | null) => void;
+  isInsightsPanelOpen: boolean;
+  setIsInsightsPanelOpen: (isOpen: boolean) => void;
 }
 
 const languageToCodeMap: Record<string, string> = {
@@ -42,11 +45,17 @@ export const ChatView: React.FC<ChatViewProps> = ({
   doctorProfile,
   pendingFirstMessage,
   setPendingFirstMessage,
+  isInsightsPanelOpen,
+  setIsInsightsPanelOpen,
 }) => {
   const [isSending, setIsSending] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [playingMessageId, setPlayingMessageId] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  
+  // State for Prompt Insights
+  const [insights, setInsights] = useState<PromptInsight | null>(null);
+  const [isFetchingInsights, setIsFetchingInsights] = useState(false);
 
 
   const activeGpt = chat?.gptId ? PRE_CODED_GPTS.find(g => g.id === chat.gptId) : undefined;
@@ -54,6 +63,25 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
   };
+  
+  const fetchInsightsForPrompt = useCallback(async (prompt: string) => {
+    if (!prompt) return;
+    setIsFetchingInsights(true);
+    setInsights(null);
+    try {
+        const fetchedInsights = await getPromptInsights(prompt, doctorProfile, language);
+        setInsights(fetchedInsights);
+        if (fetchedInsights) {
+          setIsInsightsPanelOpen(true); // Open panel automatically when insights are ready
+        }
+    } catch (error) {
+        console.error("Failed to fetch prompt insights:", error);
+        setInsights(null);
+    } finally {
+        setIsFetchingInsights(false);
+    }
+  }, [doctorProfile, language, setIsInsightsPanelOpen]);
+
 
   useEffect(() => {
     setTimeout(scrollToBottom, 100);
@@ -98,6 +126,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
     if (!chat) return;
     
     setIsSending(true);
+    fetchInsightsForPrompt(message);
 
     const userMessage: Message = {
       id: `msg-${Date.now()}`,
@@ -170,7 +199,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
     } finally {
         setIsSending(false);
     }
-  }, [chat, language, updateChat, userRole, activeGpt, isDoctorVerified, doctorProfile, setPendingVerificationMessage, setShowVerificationModal]);
+  }, [chat, language, updateChat, userRole, activeGpt, isDoctorVerified, doctorProfile, setPendingVerificationMessage, setShowVerificationModal, fetchInsightsForPrompt]);
 
   useEffect(() => {
     if (isDoctorVerified && pendingVerificationMessage && chat) {
@@ -225,29 +254,60 @@ export const ChatView: React.FC<ChatViewProps> = ({
   }
 
   return (
-    <div className="flex-1 flex flex-col h-full overflow-hidden">
-      <audio ref={audioRef} style={{ display: 'none' }} />
-      <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-2">
-        {chat.messages.map((message) => (
-            <ChatMessage
-                key={message.id}
-                message={message}
-                onToggleTts={handleToggleTts}
-                playingMessageId={playingMessageId}
-            />
-        ))}
-        <div ref={messagesEndRef} />
+    <div className="flex-1 flex h-full overflow-hidden">
+      <div className="flex-1 flex flex-col h-full overflow-hidden">
+        <audio ref={audioRef} style={{ display: 'none' }} />
+
+        {/* Desktop Header */}
+        <header className="hidden md:flex items-center justify-between p-4 border-b border-aivana-light-grey">
+            <h2 className="text-lg font-semibold truncate">
+                {chat.title}
+            </h2>
+            <button
+              onClick={() => setIsInsightsPanelOpen(!isInsightsPanelOpen)}
+              className={`p-2 rounded-md transition-colors ${isInsightsPanelOpen ? 'bg-aivana-accent text-white' : 'text-gray-400 hover:bg-aivana-grey hover:text-white'}`}
+              aria-label="Toggle prompt insights"
+              title="Toggle prompt insights"
+            >
+              <Icon name="lightbulb" />
+            </button>
+        </header>
+
+        <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-2">
+          {chat.messages.map((message) => (
+              <ChatMessage
+                  key={message.id}
+                  message={message}
+                  onToggleTts={handleToggleTts}
+                  playingMessageId={playingMessageId}
+              />
+          ))}
+          <div ref={messagesEndRef} />
+        </div>
+        <div className="p-4 w-full max-w-4xl mx-auto">
+          <ChatInput 
+              onSendMessage={handleSendMessage} 
+              isSending={isSending} 
+              onPlayLastMessage={handlePlayLastMessage}
+              isTtsPlaying={!!lastAiMessage && playingMessageId === lastAiMessage.id}
+              canPlayTts={!!lastAiMessage}
+              language={language}
+          />
+        </div>
       </div>
-      <div className="p-4 w-full max-w-4xl mx-auto">
-        <ChatInput 
-            onSendMessage={handleSendMessage} 
-            isSending={isSending} 
-            onPlayLastMessage={handlePlayLastMessage}
-            isTtsPlaying={!!lastAiMessage && playingMessageId === lastAiMessage.id}
-            canPlayTts={!!lastAiMessage}
-            language={language}
-        />
-      </div>
+       {/* Backdrop for mobile when panel is open */}
+      {isInsightsPanelOpen && (
+          <div
+            className="fixed inset-0 bg-black/60 z-10 md:hidden"
+            onClick={() => setIsInsightsPanelOpen(false)}
+          ></div>
+      )}
+      <PromptInsightsPanel
+        isOpen={isInsightsPanelOpen}
+        onClose={() => setIsInsightsPanelOpen(false)}
+        insights={insights}
+        isLoading={isFetchingInsights}
+      />
     </div>
   );
 };

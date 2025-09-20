@@ -28,6 +28,9 @@ const App: React.FC = () => {
   // State for Veda Session
   const [isVedaSessionActive, setIsVedaSessionActive] = useState(false);
 
+  // State for Prompt Insights Panel
+  const [isInsightsPanelOpen, setIsInsightsPanelOpen] = useState(false);
+
 
   const activeChat = useMemo(() => {
     return chats.find(chat => chat.id === activeChatId) || null;
@@ -49,6 +52,7 @@ const App: React.FC = () => {
     setActiveChatId(newChat.id);
     setPendingVerificationMessage(null);
     setPendingFirstMessage(null);
+    setIsInsightsPanelOpen(false); // Close panel on new chat
     if(window.innerWidth < 768) {
       setSidebarOpen(false);
     }
@@ -63,6 +67,7 @@ const App: React.FC = () => {
   const handleSelectChat = useCallback((chatId: string) => {
     setActiveChatId(chatId);
     setPendingVerificationMessage(null);
+    setIsInsightsPanelOpen(false); // Close panel on chat select
     if(window.innerWidth < 768) {
       setSidebarOpen(false);
     }
@@ -120,7 +125,17 @@ const App: React.FC = () => {
                   <h2 className="text-lg font-semibold truncate px-2">
                     {activeChat?.title || 'Aivana AI for Doctors'}
                   </h2>
-                  <div className="w-9 h-9"></div> {/* Spacer to help center the title */}
+                   <div className="w-9 h-9">
+                    {activeChat && (
+                        <button
+                          onClick={() => setIsInsightsPanelOpen(true)}
+                          className="text-white p-2 rounded-md hover:bg-aivana-grey"
+                          aria-label="Show prompt insights"
+                        >
+                          <Icon name="lightbulb" />
+                        </button>
+                    )}
+                  </div>
                 </header>
                 <ChatView
                   key={activeChatId} // Force re-mount on chat change
@@ -136,6 +151,8 @@ const App: React.FC = () => {
                   doctorProfile={doctorProfile}
                   pendingFirstMessage={pendingFirstMessage}
                   setPendingFirstMessage={setPendingFirstMessage}
+                  isInsightsPanelOpen={isInsightsPanelOpen}
+                  setIsInsightsPanelOpen={setIsInsightsPanelOpen}
                 />
             </>
         )}

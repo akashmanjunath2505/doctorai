@@ -1,7 +1,8 @@
 
 
+
 import { GoogleGenAI, Content, Type } from "@google/genai";
-import { UserRole, PreCodedGpt, Citation, StructuredDataType, DoctorProfile, VedaInsightBlock } from '../types';
+import { UserRole, PreCodedGpt, Citation, StructuredDataType, DoctorProfile, VedaInsightBlock, PromptInsight } from '../types';
 
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
@@ -124,6 +125,15 @@ const JSON_SCHEMAS: Record<string, object> = {
             }
         },
         required: ['insights']
+    },
+    'prompt-insights': {
+        type: Type.OBJECT,
+        properties: {
+            keyTerms: { type: Type.ARRAY, items: { type: Type.STRING }, description: 'Key clinical entities, symptoms, or medications mentioned.' },
+            suggestions: { type: Type.ARRAY, items: { type: Type.STRING }, description: 'Actionable suggestions to make the prompt more specific for a better AI response.' },
+            followUps: { type: Type.ARRAY, items: { type: Type.STRING }, description: 'Three potential follow-up questions the doctor could ask the AI.' }
+        },
+        required: ['keyTerms', 'suggestions', 'followUps']
     }
 };
 
@@ -380,5 +390,33 @@ export async function getVedaSpokenResponse(
     } catch (error) {
         console.error("Veda spoken response error:", error);
         return "I'm sorry, I encountered an error trying to answer that question.";
+    }
+}
+
+
+export async function getPromptInsights(
+    prompt: string,
+    doctorProfile: DoctorProfile,
+    language: string
+): Promise<PromptInsight | null> {
+    const systemInstruction = `You are a helpful AI assistant for a doctor with a ${doctorProfile.qualification} degree. Your role is to analyze the doctor's prompt to another AI and provide constructive feedback to improve the quality of the AI's response. Analyze the following prompt and provide key clinical terms, suggestions for refinement, and potential follow-up questions. Your response must be in ${language} and must be a single JSON object that strictly conforms to the provided schema. Do not output any text other than the JSON object.`;
+
+    try {
+        const response = await ai.models.generateContent({
+            model: 'gemini-2.5-flash',
+            contents: [{ role: 'user', parts: [{ text: prompt }] }],
+            config: {
+                systemInstruction,
+                responseMimeType: "application/json",
+                responseSchema: JSON_SCHEMAS['prompt-insights'],
+            },
+        });
+
+        const responseText = response.text.trim();
+        const parsedJson = JSON.parse(responseText);
+        return parsedJson as PromptInsight;
+    } catch (error) {
+        console.error("Prompt Insights error:", error);
+        return null;
     }
 }
