@@ -1,422 +1,358 @@
+// services/geminiService.ts
 
+import { GoogleGenAI, Type } from "@google/genai";
+import {
+  Message,
+  DoctorProfile,
+  PreCodedGpt,
+  PromptInsight,
+  ClinicalProtocol,
+  ScribeInsightBlock,
+} from '../types';
+import { runNexusWorkflow } from '../engine/workflow';
 
-
-import { GoogleGenAI, Content, Type } from "@google/genai";
-import { UserRole, PreCodedGpt, Citation, StructuredDataType, DoctorProfile, VedaInsightBlock, PromptInsight } from '../types';
-
+// Per guidelines, initialize with apiKey from environment variables.
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
-const GROUNDING_KEYWORDS = ['latest', 'recent', 'news', 'guidelines', 'statistics', 'current events', 'who won', 'what is the score'];
-const CONTROLLED_SUBSTANCES = ['morphine', 'fentanyl', 'oxycodone', 'codeine', 'diazepam', 'lorazepam', 'alprazolam', 'ketamine', 'buprenorphine'];
+/**
+ * Generates a concise clinical case summary from a conversation history.
+ */
+export const generateCaseSummary = async (
+  messages: Message[],
+  language: string,
+  doctorProfile: DoctorProfile
+): Promise<string> => {
+  const conversationHistory = messages
+    .map((msg) => `${msg.sender}: ${msg.text}`)
+    .join('\n');
 
-const TRUSTED_DATA_SOURCES = `
+  const prompt = `
+    Based on the following conversation history between a user (doctor) and an AI, generate a concise and structured clinical case summary in markdown format.
+    The summary should be suitable for patient records or handover.
+    - Doctor's Profile: ${doctorProfile.qualification}.
+    - Language for summary: ${language}.
 
----
-**Knowledge Base: Trusted Indian & Global Health Data Sources**
-When answering questions about statistics, guidelines, or public health, you MUST prioritize and reference information from the following trusted sources. This is your primary knowledge base.
+    Conversation:
+    ${conversationHistory}
 
-**General Public & National Health Info:**
-*   **MoHFW India (https://mohfw.gov.in):** The official Ministry of Health and Family Welfare site for portals, dashboards, and national health advisories.
-*   **Data.gov.in MoHFW (https://www.data.gov.in/ministrydepartment/Ministry%20of%20Health%20and%20Family%20Welfare):** Open government data with state/indicator level health datasets.
-*   **NHM HMIS Portal (https://www.india.gov.in/nhm-health-statistics-information-portal):** For state and district level health statistics and HMIS indicators.
+    Generate the summary.
+  `;
 
-**Emergency Care & First Aid:**
-*   **WHO Emergency Care Toolkit (https://www.who.int/teams/integrated-health-services/clinical-services-and-systems/emergency-and-critical-care/emergency-care-toolkit):** Provides protocols, tools, and training for triage and red flags.
-*   **WHO Emergency Care Dataset (https://cdn.who.int/media/docs/default-source/integrated-health-services-(ihs)/csy/dataset-for-emergency-care.pdf):** Defines data standards and fields for emergency care.
-*   **First Aid Intents Dataset (https://www.kaggle.com/datasets/mahmoudahmed6/first-aid-intents-dataset):** A dataset for understanding first aid related questions and utterances.
-*   **AIDER (Zenodo - https://zenodo.org/records/3888300):** A dataset of annotated aerial images for disaster response.
----
-`;
-
-// Schemas for structured JSON responses
-const JSON_SCHEMAS: Record<string, object> = {
-    'doctor-ddx': {
-        type: Type.OBJECT,
-        properties: {
-            summary: { type: Type.STRING, description: 'A natural language summary of the differential diagnoses.' },
-            diagnoses: {
-                type: Type.ARRAY,
-                items: {
-                    type: Type.OBJECT,
-                    properties: {
-                        diagnosis: { type: Type.STRING },
-                        rationale: { type: Type.STRING },
-                        confidence: { type: Type.STRING, enum: ['High', 'Medium', 'Low'] }
-                    },
-                    required: ['diagnosis', 'rationale', 'confidence']
-                }
-            }
-        },
-        required: ['summary', 'diagnoses']
-    },
-    'doctor-lab': {
-        type: Type.OBJECT,
-        properties: {
-            summary: { type: Type.STRING, description: 'A natural language summary of the lab result analysis.' },
-            overallInterpretation: { type: Type.STRING, description: 'A high-level interpretation of the combined lab results.' },
-            results: {
-                type: Type.ARRAY,
-                items: {
-                    type: Type.OBJECT,
-                    properties: {
-                        parameter: { type: Type.STRING },
-                        value: { type: Type.STRING },
-                        referenceRange: { type: Type.STRING },
-                        interpretation: { type: Type.STRING },
-                        urgency: { type: Type.STRING, enum: ['Normal', 'Abnormal', 'Critical'] }
-                    },
-                    required: ['parameter', 'value', 'referenceRange', 'interpretation', 'urgency']
-                }
-            }
-        },
-        required: ['summary', 'overallInterpretation', 'results']
-    },
-    'doctor-handout': {
-        type: Type.OBJECT,
-        properties: {
-            summary: { type: Type.STRING, description: 'A short summary of what the handout is about.' },
-            title: { type: Type.STRING },
-            introduction: { type: Type.STRING },
-            sections: {
-                type: Type.ARRAY,
-                items: {
-                    type: Type.OBJECT,
-                    properties: {
-                        heading: { type: Type.STRING },
-                        content: { type: Type.STRING }
-                    },
-                    required: ['heading', 'content']
-                }
-            },
-            disclaimer: { type: Type.STRING }
-        },
-        required: ['summary', 'title', 'introduction', 'sections', 'disclaimer']
-    },
-    'diarize-transcript': {
-        type: Type.OBJECT,
-        properties: {
-            dialogue: {
-                type: Type.ARRAY,
-                items: {
-                    type: Type.OBJECT,
-                    properties: {
-                        speaker: { type: Type.STRING, enum: ['Doctor', 'Patient'] },
-                        text: { type: Type.STRING }
-                    },
-                    required: ['speaker', 'text']
-                }
-            }
-        },
-        required: ['dialogue']
-    },
-    'veda-insights': {
-        type: Type.OBJECT,
-        properties: {
-            insights: {
-                type: Type.ARRAY,
-                items: {
-                    type: Type.OBJECT,
-                    properties: {
-                        category: { type: Type.STRING, enum: ['Differential Diagnosis', 'Questions to Ask', 'Labs to Consider', 'General Note'] },
-                        points: { type: Type.ARRAY, items: { type: Type.STRING } }
-                    },
-                    required: ['category', 'points']
-                }
-            }
-        },
-        required: ['insights']
-    },
-    'prompt-insights': {
-        type: Type.OBJECT,
-        properties: {
-            keyTerms: { type: Type.ARRAY, items: { type: Type.STRING }, description: 'Key clinical entities, symptoms, or medications mentioned.' },
-            suggestions: { type: Type.ARRAY, items: { type: Type.STRING }, description: 'Actionable suggestions to make the prompt more specific for a better AI response.' },
-            followUps: { type: Type.ARRAY, items: { type: Type.STRING }, description: 'Three potential follow-up questions the doctor could ask the AI.' }
-        },
-        required: ['keyTerms', 'suggestions', 'followUps']
-    }
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: prompt,
+    });
+    return response.text;
+  } catch (error) {
+    console.error('Error generating case summary:', error);
+    return 'Error: Could not generate summary.';
+  }
 };
 
-export async function transcribeAudio(base64Audio: string, mimeType: string, language: string): Promise<string> {
-    try {
-        const audioPart = {
-            inlineData: {
-                data: base64Audio,
-                mimeType: mimeType,
+
+/**
+ * Analyzes a user's prompt and provides suggestions for improvement.
+ */
+export const getPromptInsights = async (
+  prompt: string,
+  doctorProfile: DoctorProfile,
+  language: string
+): Promise<PromptInsight | null> => {
+  const systemInstruction = `You are an AI assistant that helps doctors refine their prompts to get better clinical answers.
+    Your analysis should be based on the doctor's profile: ${doctorProfile.qualification}.
+    The response language should be ${language}.
+    Analyze the user's prompt and provide:
+    1.  Key clinical terms identified.
+    2.  Suggestions to make the prompt more specific, clear, or comprehensive.
+    3.  Potential follow-up questions the doctor might ask.`;
+
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: `Analyze this prompt: "${prompt}"`,
+      config: {
+        systemInstruction,
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            keyTerms: {
+              type: Type.ARRAY,
+              items: { type: Type.STRING },
+              description: 'Key clinical terms or concepts identified in the prompt.',
             },
-        };
-        const textPart = { text: `Transcribe the following audio recording accurately. The spoken language is ${language}.` };
-
-        const response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash',
-            contents: { parts: [textPart, audioPart] },
-        });
-
-        return response.text;
-    } catch (error) {
-        console.error("Gemini audio transcription error:", error);
-        throw new Error("Failed to transcribe audio with Gemini API.");
-    }
-}
-
-export async function diarizeTranscriptChunk(
-    transcriptChunk: string,
-    history: string,
-    language: string
-): Promise<Array<{ speaker: 'Doctor' | 'Patient'; text: string }> | null> {
-    const systemInstruction = `You are an expert at speaker diarization for medical consultations. Analyze the following transcript chunk, using the provided history for context. Distinguish between the 'Doctor' and the 'Patient'. The Doctor uses clinical language, asks questions, and provides explanations. The Patient describes symptoms and personal experiences. Your output must be a single JSON object that strictly conforms to the provided schema, containing an array of dialogue entries. Do not output any text other than the JSON object. The conversation is in ${language}.`;
-    
-    const userPrompt = `CONTEXTUAL HISTORY:\n${history || 'No history provided.'}\n\nNEW TRANSCRIPT CHUNK TO DIARIZE:\n"${transcriptChunk}"`;
-
-    try {
-        const response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash',
-            contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
-            config: {
-                systemInstruction,
-                responseMimeType: "application/json",
-                responseSchema: JSON_SCHEMAS['diarize-transcript'],
+            suggestions: {
+              type: Type.ARRAY,
+              items: { type: Type.STRING },
+              description: 'Actionable suggestions to improve the prompt for better clinical accuracy or detail.',
             },
-        });
+            followUps: {
+              type: Type.ARRAY,
+              items: { type: Type.STRING },
+              description: 'Relevant follow-up questions the user might consider asking.',
+            },
+          },
+          required: ['keyTerms', 'suggestions', 'followUps'],
+        },
+      },
+    });
 
-        const responseText = response.text.trim();
-        const parsedJson = JSON.parse(responseText);
-        if (parsedJson.dialogue) {
-            return parsedJson.dialogue;
-        }
-        return null;
-    } catch (error) {
-        console.error("Diarization error:", error);
-        return null;
-    }
-}
+    const jsonText = response.text.trim();
+    return JSON.parse(jsonText) as PromptInsight;
+  } catch (error) {
+    console.error('Error getting prompt insights:', error);
+    return null;
+  }
+};
+
+/**
+ * Transcribes an audio blob into text.
+ */
+export const transcribeAudio = async (
+  base64Audio: string,
+  mimeType: string,
+  language: string
+): Promise<string> => {
+  try {
+    const audioPart = {
+      inlineData: {
+        data: base64Audio,
+        mimeType: mimeType,
+      },
+    };
+    const textPart = {
+      text: `Transcribe this audio. The speaker is speaking in ${language}.`,
+    };
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: { parts: [audioPart, textPart] },
+    });
+
+    return response.text;
+  } catch (error) {
+    console.error('Error transcribing audio:', error);
+    return '';
+  }
+};
 
 
-export function checkForControlledSubstances(message: string): boolean {
-    const lowerCaseMessage = message.toLowerCase();
-    return CONTROLLED_SUBSTANCES.some(drug => lowerCaseMessage.includes(drug));
-}
-
-
-function shouldUseGrounding(message: string): boolean {
-    const lowerCaseMessage = message.toLowerCase();
-    return GROUNDING_KEYWORDS.some(keyword => lowerCaseMessage.includes(keyword));
-}
-
-function constructSystemInstruction(
-    userRole: UserRole, 
-    language: string, 
-    doctorProfile: DoctorProfile,
-    activeGpt?: PreCodedGpt
-): string {
-    
-    let baseInstruction = "You are Aivana, a helpful AI healthcare assistant operating in India. Be empathetic, clear, and professional. Format your answers using Markdown for clarity, including lists, bold text, and headings where appropriate. ";
-    
-    // Core Persona based on Qualification
-    let persona = `You are assisting a qualified, verified doctor with a ${doctorProfile.qualification} degree. Your tone should be professional and concise. Provide evidence-based information and use precise medical terminology. Reference Indian clinical guidelines where possible. Always remind the user to use their clinical judgment.`;
-
-    if (activeGpt) {
-        persona += `\n\nCONTEXT: The user has selected the '${activeGpt.title}' mode. ${activeGpt.description} Tailor your responses to this specific context. `;
-        if(JSON_SCHEMAS[activeGpt.id]) {
-            persona += "Your response must be a single JSON object that strictly conforms to the provided schema. Include a natural language summary of your findings in the 'summary' field."
-        }
-    }
-
-    let finalInstruction = `${baseInstruction}\n${persona}\n${TRUSTED_DATA_SOURCES}\nAll your responses must be in ${language}.`;
-    
-    return finalInstruction;
-}
-
-
-export async function* streamChatResponse({
+/**
+ * Streams a chat response by running the full clinical reasoning workflow.
+ */
+export async function* streamChatResponse(params: {
+  message: string;
+  history: Message[];
+  userRole: 'Doctor';
+  language: string;
+  activeGpt?: PreCodedGpt;
+  isDoctorVerified: boolean;
+  doctorProfile: DoctorProfile;
+  knowledgeBaseProtocols: ClinicalProtocol[];
+}): AsyncGenerator<{
+  textChunk?: string;
+  citations?: { uri: string; title: string }[];
+  structuredData?: any;
+  source_protocol_id?: string;
+  source_protocol_last_reviewed?: string;
+  action_type?: 'Informational' | 'Requires Clinician Confirmation';
+  error?: string;
+}> {
+  const {
     message,
     history,
-    userRole,
     language,
     activeGpt,
     isDoctorVerified,
-    doctorProfile
-}: {
-    message: string;
-    history: Content[];
-    userRole: UserRole;
-    language: string;
-    activeGpt?: PreCodedGpt;
-    isDoctorVerified: boolean;
-    doctorProfile: DoctorProfile;
-}) {
-    // CRITICAL SAFETY GUARDRAIL
-    if (checkForControlledSubstances(message)) {
-        if (!isDoctorVerified) {
-            // This case should be handled by the UI, but as a fallback:
-            yield { error: "Access to this information requires license verification. Please complete the verification step." };
-            return;
-        }
-    }
+    doctorProfile,
+    knowledgeBaseProtocols,
+  } = params;
+  
+  // Simplified license check for demo (kept at the entry point)
+  if (message.toLowerCase().includes('mtp') && !isDoctorVerified) {
+    yield { error: 'Accessing some information requires license verification.' };
+    return;
+  }
 
-    try {
-        const useGrounding = shouldUseGrounding(message);
-        const systemInstruction = constructSystemInstruction(userRole, language, doctorProfile, activeGpt);
-        
-        const activeSchema = activeGpt ? JSON_SCHEMAS[activeGpt.id] : undefined;
-        const effectiveGptId = activeGpt?.id;
+  // Call the new workflow orchestrator
+  yield* runNexusWorkflow({
+      message,
+      history,
+      doctorProfile,
+      language,
+      activeGpt,
+      isDoctorVerified,
+      knowledgeBase: knowledgeBaseProtocols,
+  });
+}
 
-        const contents: Content[] = [...history, { role: 'user', parts: [{ text: message }] }];
-        
-        const stream = await ai.models.generateContentStream({
-            model: 'gemini-2.5-flash',
-            contents,
-            config: {
-                systemInstruction,
-                ...(useGrounding && !activeSchema && { tools: [{ googleSearch: {} }] }), // Grounding is not compatible with JSON mode
-                ...(activeSchema && { responseMimeType: "application/json", responseSchema: activeSchema }),
+/**
+ * Gets a spoken response for the Scribe session wake-word feature.
+ */
+export const getScribeSpokenResponse = async (
+  question: string,
+  doctorProfile: DoctorProfile,
+  language: string
+): Promise<string> => {
+  const systemInstruction = `You are Veda, a real-time AI assistant for doctors.
+  - The user (a doctor) has just said your wake word "Veda" followed by a question during a patient encounter.
+  - Answer the question very concisely and clearly, as if you are speaking.
+  - Doctor's profile: ${doctorProfile.qualification}.
+  - Language: ${language}.`;
+
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: `Question: "${question}"`,
+      config: {
+        systemInstruction,
+        thinkingConfig: { thinkingBudget: 0 } // For low latency
+      },
+    });
+    return response.text;
+  } catch (error) {
+    console.error('Error getting Scribe spoken response:', error);
+    return 'Sorry, I encountered an error.';
+  }
+};
+
+/**
+ * Streams clinical insights for the Scribe session based on a transcript.
+ */
+export async function* streamScribeInsights(
+  transcript: string,
+  doctorProfile: DoctorProfile,
+  language: string
+): AsyncGenerator<{ insights?: ScribeInsightBlock[] }> {
+  const systemInstruction = `You are Veda, an AI assistant providing real-time clinical insights during a patient consultation.
+    - Analyze the following transcript between a Doctor and a Patient.
+    - Doctor's profile: ${doctorProfile.qualification}.
+    - Language: ${language}.
+    - Generate a list of insights categorized into: 'Differential Diagnosis', 'Questions to Ask', 'Labs to Consider', 'General Note'.
+    - Provide bullet points for each category.
+    - Your response MUST be in JSON format.`;
+  
+  try {
+    const response = await ai.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: `Transcript:\n${transcript}`,
+        config: {
+            systemInstruction,
+            responseMimeType: 'application/json',
+            responseSchema: {
+                type: Type.OBJECT,
+                properties: {
+                    insights: {
+                        type: Type.ARRAY,
+                        items: {
+                            type: Type.OBJECT,
+                            properties: {
+                                category: { type: Type.STRING, enum: ['Differential Diagnosis', 'Questions to Ask', 'Labs to Consider', 'General Note'] },
+                                points: { type: Type.ARRAY, items: { type: Type.STRING } },
+                            },
+                            required: ['category', 'points'],
+                        },
+                    },
+                },
+                required: ['insights'],
             },
-        });
+        },
+    });
 
-        if (activeSchema) {
-            // Handle JSON streaming: accumulate chunks and parse at the end
-            let responseText = '';
-            for await (const chunk of stream) {
-                const textChunk = chunk.text;
-                if (textChunk) {
-                    responseText += textChunk;
-                }
-            }
-
-            try {
-                const parsedJson = JSON.parse(responseText);
-                let structuredData: StructuredDataType | undefined;
-
-                switch (effectiveGptId) {
-                    case 'doctor-ddx':
-                        structuredData = { type: 'ddx', data: parsedJson.diagnoses, summary: parsedJson.summary };
-                        break;
-                    case 'doctor-lab':
-                        structuredData = { type: 'lab', data: parsedJson, summary: parsedJson.summary };
-                        break;
-                    case 'doctor-handout':
-                        structuredData = { type: 'handout', data: parsedJson, summary: parsedJson.summary };
-                        break;
-                    default:
-                        structuredData = undefined;
-                }
-
-                if (structuredData) {
-                    yield { structuredData };
-                } else {
-                     yield { textChunk: parsedJson.summary || 'Received structured data in an unknown format.' };
-                }
-
-            } catch (e) {
-                console.error("JSON parsing error:", e);
-                yield { error: "Failed to parse the structured response from the AI." };
-            }
-
-        } else {
-             // Handle regular text streaming
-            let groundingChunksFromStream: any[] | undefined;
-
-            for await (const chunk of stream) {
-                const textChunk = chunk.text;
-                if (textChunk) {
-                    yield { textChunk };
-                }
-                const groundingChunks = chunk.candidates?.[0]?.groundingMetadata?.groundingChunks;
-                if (groundingChunks) {
-                    groundingChunksFromStream = groundingChunks;
-                }
-            }
-            
-            if (groundingChunksFromStream) {
-                const citations: Citation[] = groundingChunksFromStream
-                    .map((c: any) => ({ uri: c.web?.uri, title: c.web?.title }))
-                    .filter((c: Citation) => c.uri && c.title);
-
-                if (citations.length > 0) {
-                    yield { citations };
-                }
-            }
-        }
-
-    } catch (error) {
-        console.error("Gemini API error:", error);
-        yield { error: "Failed to get response from Gemini API. Please check your connection and API key." };
+    const jsonText = response.text.trim();
+    const result = JSON.parse(jsonText);
+    if (result.insights) {
+        yield { insights: result.insights as ScribeInsightBlock[] };
     }
+  } catch (error) {
+    console.error('Error streaming Scribe insights:', error);
+  }
 }
 
-export async function* streamVedaInsights(
-    transcript: string,
-    doctorProfile: DoctorProfile,
-    language: string
-): AsyncGenerator<{ insights?: VedaInsightBlock[], error?: string }> {
-    const systemInstruction = `You are Veda, an expert clinical decision support AI. Your user is a doctor with a ${doctorProfile.qualification} degree. Analyze the following real-time transcript of a doctor-patient consultation. Your task is to provide concise, real-time suggestions in the background. Based on the symptoms and history, generate a running list of differential diagnoses, suggest relevant follow-up questions for the doctor to ask, and recommend potential lab investigations. Your output must be a single JSON object that strictly conforms to the provided schema. Do not output any text other than the JSON object. Your response must be in ${language}.`;
+/**
+ * Generates a clinical SOAP note from a transcript.
+ */
+export const generateClinicalNote = async (
+  transcript: string,
+  doctorProfile: DoctorProfile,
+  language: string
+): Promise<string> => {
+  const systemInstruction = `You are an expert medical scribe AI named Aivana. Your task is to analyze the following transcript of a doctor-patient encounter and generate a concise, structured clinical note in the SOAP (Subjective, Objective, Assessment, Plan) format.
 
-    try {
-        const response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash',
-            contents: [{ role: 'user', parts: [{ text: transcript }] }],
-            config: {
-                systemInstruction,
-                responseMimeType: "application/json",
-                responseSchema: JSON_SCHEMAS['veda-insights'],
+    - Doctor's Profile: ${doctorProfile.qualification}.
+    - Language for Note: ${language}.
+    - The note must be in well-formatted markdown. Use headings for each section (e.g., '## Subjective').
+    - If a section has no relevant information in the transcript, state "Not discussed" or "Not assessed". Do not invent information.
+    - Extract chief complaints, history of present illness, relevant past medical history, and review of systems for the Subjective section.
+    - Extract vitals, physical exam findings, and lab results for the Objective section.
+    - Create a differential diagnosis or a primary diagnosis for the Assessment.
+    - List diagnostic tests, treatments, patient education, and follow-up instructions for the Plan.`;
+
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: `Transcript:\n---\n${transcript}\n---\n\nGenerate the SOAP note now.`,
+      config: {
+        systemInstruction,
+      },
+    });
+    return response.text;
+  } catch (error) {
+    console.error('Error generating clinical note:', error);
+    return 'Error: Could not generate the clinical note. Please try again.';
+  }
+};
+
+
+/**
+ * Determines the speaker ("Doctor" or "Patient") for a transcript chunk.
+ */
+export const diarizeTranscriptChunk = async (
+  chunk: string,
+  history: string,
+  language: string
+): Promise<{ speaker: 'Doctor' | 'Patient'; text: string }[] | null> => {
+  const systemInstruction = `You are an expert at speech diarization.
+    Your task is to analyze a new transcript chunk in the context of the recent conversation history and determine who is speaking: the "Doctor" or the "Patient".
+    - The conversation language is ${language}.
+    - Output a JSON array where each object has a "speaker" and "text" property.
+    - If you cannot determine the speaker, default to "Patient".`;
+
+  const prompt = `
+    Recent History (for context):
+    ---
+    ${history || 'No history yet.'}
+    ---
+    New Transcript Chunk to Diarize:
+    "${chunk}"
+  `;
+  
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: prompt,
+      config: {
+        systemInstruction,
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              speaker: { type: Type.STRING, enum: ['Doctor', 'Patient'] },
+              text: { type: Type.STRING },
             },
-        });
+            required: ['speaker', 'text'],
+          },
+        },
+      },
+    });
 
-        const responseText = response.text.trim();
-        const parsedJson = JSON.parse(responseText);
-        if (parsedJson.insights) {
-            yield { insights: parsedJson.insights };
-        }
-    } catch (error) {
-        console.error("Veda Insights error:", error);
-        yield { error: "Failed to generate insights." };
-    }
-}
-
-export async function getVedaSpokenResponse(
-    question: string,
-    doctorProfile: DoctorProfile,
-    language: string
-): Promise<string> {
-    const systemInstruction = `You are Veda, an expert clinical AI assistant for a doctor with a ${doctorProfile.qualification} degree. The doctor has asked you a direct question via voice command during a live patient consultation. Answer it clearly, accurately, and very concisely. Get straight to the point. Your response will be read aloud. Your response must be in ${language}.`;
-
-    try {
-        const response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash',
-            contents: [{ role: 'user', parts: [{ text: question }] }],
-            config: { systemInstruction },
-        });
-        return response.text;
-    } catch (error) {
-        console.error("Veda spoken response error:", error);
-        return "I'm sorry, I encountered an error trying to answer that question.";
-    }
-}
-
-
-export async function getPromptInsights(
-    prompt: string,
-    doctorProfile: DoctorProfile,
-    language: string
-): Promise<PromptInsight | null> {
-    const systemInstruction = `You are a helpful AI assistant for a doctor with a ${doctorProfile.qualification} degree. Your role is to analyze the doctor's prompt to another AI and provide constructive feedback to improve the quality of the AI's response. Analyze the following prompt and provide key clinical terms, suggestions for refinement, and potential follow-up questions. Your response must be in ${language} and must be a single JSON object that strictly conforms to the provided schema. Do not output any text other than the JSON object.`;
-
-    try {
-        const response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash',
-            contents: [{ role: 'user', parts: [{ text: prompt }] }],
-            config: {
-                systemInstruction,
-                responseMimeType: "application/json",
-                responseSchema: JSON_SCHEMAS['prompt-insights'],
-            },
-        });
-
-        const responseText = response.text.trim();
-        const parsedJson = JSON.parse(responseText);
-        return parsedJson as PromptInsight;
-    } catch (error) {
-        console.error("Prompt Insights error:", error);
-        return null;
-    }
-}
+    const jsonText = response.text.trim();
+    return JSON.parse(jsonText);
+  } catch (error) {
+    console.error('Error during diarization:', error);
+    return null;
+  }
+};

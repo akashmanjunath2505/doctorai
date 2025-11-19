@@ -1,11 +1,16 @@
-import React, { useState, useCallback, useMemo } from 'react';
+import React, { useState, useCallback, useMemo, useEffect } from 'react';
 import { Sidebar } from './components/Sidebar';
 import { ChatView } from './components/ChatView';
-import { UserRole, Chat, Message, PreCodedGpt, DoctorProfile } from './types';
+import { UserRole, Chat, Message, PreCodedGpt, DoctorProfile, ClinicalProtocol } from './types';
 import { PRE_CODED_GPTS } from './constants';
 import { Icon } from './components/Icon';
 import { LicenseVerificationModal } from './components/LicenseVerificationModal';
-import { VedaSessionView } from './components/VedaSessionView';
+import { ScribeSessionView } from './components/VedaSessionView';
+import { CLINICAL_PROTOCOLS } from './knowledgeBase';
+import { PrintViewModal } from './components/PrintViewModal';
+import { AboutModal } from './components/AboutModal';
+import { generateCaseSummary } from './services/geminiService';
+import { CaseSummaryModal } from './components/CaseSummaryModal';
 
 const App: React.FC = () => {
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -25,11 +30,22 @@ const App: React.FC = () => {
       canPrescribeAllopathic: 'no'
   });
   
-  // State for Veda Session
-  const [isVedaSessionActive, setIsVedaSessionActive] = useState(false);
+  // App View State
+  type View = 'chat' | 'scribe';
+  const [activeView, setActiveView] = useState<View>('chat');
 
   // State for Prompt Insights Panel
   const [isInsightsPanelOpen, setIsInsightsPanelOpen] = useState(false);
+  
+  // Statically load the knowledge base articles
+  const knowledgeBaseProtocols = useMemo(() => CLINICAL_PROTOCOLS, []);
+
+  // State for Modals
+  const [isPrintModalOpen, setIsPrintModalOpen] = useState(false);
+  const [isAboutModalOpen, setIsAboutModalOpen] = useState(false);
+  const [isSummaryModalOpen, setIsSummaryModalOpen] = useState(false);
+  const [summaryContent, setSummaryContent] = useState<string | null>(null);
+  const [isGeneratingSummary, setIsGeneratingSummary] = useState(false);
 
 
   const activeChat = useMemo(() => {
@@ -43,13 +59,15 @@ const App: React.FC = () => {
       messages: gpt ? [{
         id: `msg-${Date.now()}`,
         sender: 'AI',
-        text: `You've started a new session with ${gpt.title}. ${gpt.description} How can I help you today?`
+        text: `You've started a new session with ${gpt.title}. ${gpt.description} How can I help you today?`,
+        action_type: 'Informational',
       }] : [],
       userRole: userRole,
       gptId: gpt?.id,
     };
     setChats(prev => [newChat, ...prev]);
     setActiveChatId(newChat.id);
+    setActiveView('chat'); // Switch back to chat view
     setPendingVerificationMessage(null);
     setPendingFirstMessage(null);
     setIsInsightsPanelOpen(false); // Close panel on new chat
@@ -66,6 +84,7 @@ const App: React.FC = () => {
 
   const handleSelectChat = useCallback((chatId: string) => {
     setActiveChatId(chatId);
+    setActiveView('chat'); // Switch back to chat view
     setPendingVerificationMessage(null);
     setIsInsightsPanelOpen(false); // Close panel on chat select
     if(window.innerWidth < 768) {
@@ -80,12 +99,89 @@ const App: React.FC = () => {
     setShowVerificationModal(false);
   };
   
-  const handleStartVedaSession = () => {
-      setIsVedaSessionActive(true);
+  const handleStartScribeSession = () => {
+      setActiveView('scribe');
       if(window.innerWidth < 768) {
         setSidebarOpen(false);
       }
   };
+
+  const handleGenerateCaseSummary = useCallback(async () => {
+    if (!activeChat || activeChat.messages.length === 0) return;
+
+    setIsGeneratingSummary(true);
+    setSummaryContent(null);
+    setIsSummaryModalOpen(true);
+
+    try {
+        const summary = await generateCaseSummary(activeChat.messages, language, doctorProfile);
+        setSummaryContent(summary);
+    } catch (error) {
+        console.error("Failed to generate case summary:", error);
+        setSummaryContent("Sorry, an error occurred while generating the summary. Please try again.");
+    } finally {
+        setIsGeneratingSummary(false);
+    }
+  }, [activeChat, language, doctorProfile]);
+
+  const renderActiveView = () => {
+    switch (activeView) {
+        case 'scribe':
+            return <ScribeSessionView
+                onEndSession={() => setActiveView('chat')}
+                doctorProfile={doctorProfile}
+                language={language}
+            />;
+        case 'chat':
+        default:
+            return (
+                <>
+                    {/* Mobile Header */}
+                    <header className="md:hidden p-4 flex items-center justify-between border-b border-aivana-light-grey bg-aivana-dark sticky top-0 z-10">
+                      <button
+                        onClick={() => setSidebarOpen(true)}
+                        className="text-white p-2 rounded-md hover:bg-aivana-grey"
+                        aria-label="Open menu"
+                      >
+                        <Icon name="menu" />
+                      </button>
+                      <h2 className="text-lg font-semibold truncate px-2">
+                        {activeChat?.title || 'Aivana AI for Doctors'}
+                      </h2>
+                       <div className="w-9 h-9">
+                        {activeChat && (
+                            <button
+                              onClick={() => setIsInsightsPanelOpen(true)}
+                              className="text-white p-2 rounded-md hover:bg-aivana-grey"
+                              aria-label="Show prompt insights"
+                            >
+                              <Icon name="lightbulb" />
+                            </button>
+                        )}
+                      </div>
+                    </header>
+                    <ChatView
+                      key={activeChatId} // Force re-mount on chat change
+                      chat={activeChat}
+                      onNewChat={handleNewChat}
+                      updateChat={updateChat}
+                      userRole={userRole}
+                      language={language}
+                      isDoctorVerified={isDoctorVerified}
+                      setShowVerificationModal={setShowVerificationModal}
+                      setPendingVerificationMessage={setPendingVerificationMessage}
+                      pendingVerificationMessage={pendingVerificationMessage}
+                      doctorProfile={doctorProfile}
+                      pendingFirstMessage={pendingFirstMessage}
+                      setPendingFirstMessage={setPendingFirstMessage}
+                      isInsightsPanelOpen={isInsightsPanelOpen}
+                      setIsInsightsPanelOpen={setIsInsightsPanelOpen}
+                      knowledgeBaseProtocols={knowledgeBaseProtocols}
+                    />
+                </>
+            );
+    }
+  }
 
 
   return (
@@ -97,70 +193,41 @@ const App: React.FC = () => {
         chats={chats}
         onNewChat={handleNewChat}
         onSelectChat={handleSelectChat}
+        activeChat={activeChat}
         activeChatId={activeChatId}
         language={language}
         setLanguage={setLanguage}
         doctorProfile={doctorProfile}
         setDoctorProfile={setDoctorProfile}
-        onStartVedaSession={handleStartVedaSession}
+        onStartScribeSession={handleStartScribeSession}
+        activeView={activeView}
+        onShowPrintModal={() => setIsPrintModalOpen(true)}
+        onShowAboutModal={() => setIsAboutModalOpen(true)}
+        onGenerateCaseSummary={handleGenerateCaseSummary}
       />
       <main className="flex-1 flex flex-col bg-aivana-dark relative">
-        {isVedaSessionActive ? (
-            <VedaSessionView
-                onEndSession={() => setIsVedaSessionActive(false)}
-                doctorProfile={doctorProfile}
-                language={language}
-            />
-        ) : (
-            <>
-                {/* Mobile Header */}
-                <header className="md:hidden p-4 flex items-center justify-between border-b border-aivana-light-grey bg-aivana-dark sticky top-0 z-10">
-                  <button
-                    onClick={() => setSidebarOpen(true)}
-                    className="text-white p-2 rounded-md hover:bg-aivana-grey"
-                    aria-label="Open menu"
-                  >
-                    <Icon name="menu" />
-                  </button>
-                  <h2 className="text-lg font-semibold truncate px-2">
-                    {activeChat?.title || 'Aivana AI for Doctors'}
-                  </h2>
-                   <div className="w-9 h-9">
-                    {activeChat && (
-                        <button
-                          onClick={() => setIsInsightsPanelOpen(true)}
-                          className="text-white p-2 rounded-md hover:bg-aivana-grey"
-                          aria-label="Show prompt insights"
-                        >
-                          <Icon name="lightbulb" />
-                        </button>
-                    )}
-                  </div>
-                </header>
-                <ChatView
-                  key={activeChatId} // Force re-mount on chat change
-                  chat={activeChat}
-                  onNewChat={handleNewChat}
-                  updateChat={updateChat}
-                  userRole={userRole}
-                  language={language}
-                  isDoctorVerified={isDoctorVerified}
-                  setShowVerificationModal={setShowVerificationModal}
-                  setPendingVerificationMessage={setPendingVerificationMessage}
-                  pendingVerificationMessage={pendingVerificationMessage}
-                  doctorProfile={doctorProfile}
-                  pendingFirstMessage={pendingFirstMessage}
-                  setPendingFirstMessage={setPendingFirstMessage}
-                  isInsightsPanelOpen={isInsightsPanelOpen}
-                  setIsInsightsPanelOpen={setIsInsightsPanelOpen}
-                />
-            </>
-        )}
+        {renderActiveView()}
       </main>
       <LicenseVerificationModal
         isOpen={showVerificationModal}
         onClose={() => setShowVerificationModal(false)}
         onVerify={handleVerifyLicense}
+      />
+      <PrintViewModal
+        isOpen={isPrintModalOpen}
+        onClose={() => setIsPrintModalOpen(false)}
+        protocols={knowledgeBaseProtocols}
+      />
+       <AboutModal
+        isOpen={isAboutModalOpen}
+        onClose={() => setIsAboutModalOpen(false)}
+      />
+      <CaseSummaryModal
+        isOpen={isSummaryModalOpen}
+        onClose={() => setIsSummaryModalOpen(false)}
+        summaryContent={summaryContent}
+        isGenerating={isGeneratingSummary}
+        chatTitle={activeChat?.title || "Case Summary"}
       />
     </div>
   );

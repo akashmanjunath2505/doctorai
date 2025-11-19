@@ -1,7 +1,7 @@
-
-import React from 'react';
+import React, { useMemo } from 'react';
 import { PreCodedGpt, Chat, DoctorProfile } from '../types';
 import { Icon } from './Icon';
+import { MTP_PROTOCOL_JSON } from '../assets/mtpProtocol';
 
 interface SidebarProps {
   isOpen: boolean;
@@ -10,12 +10,17 @@ interface SidebarProps {
   chats: Chat[];
   onNewChat: (gpt?: PreCodedGpt) => void;
   onSelectChat: (chatId: string) => void;
+  activeChat: Chat | null;
   activeChatId: string | null;
   language: string;
   setLanguage: (language: string) => void;
   doctorProfile: DoctorProfile;
   setDoctorProfile: (profile: DoctorProfile) => void;
-  onStartVedaSession: () => void;
+  onStartScribeSession: () => void;
+  activeView: 'chat' | 'scribe';
+  onShowPrintModal: () => void;
+  onShowAboutModal: () => void;
+  onGenerateCaseSummary: () => void;
 }
 
 const DoctorProfileSwitcher: React.FC<{
@@ -30,15 +35,15 @@ const DoctorProfileSwitcher: React.FC<{
 
     return (
         <div>
-            <label className="block text-xs font-medium text-gray-400 mb-1">
+            <label className="block text-xs font-medium text-gray-500 mb-2">
                 Doctor Profile (Simulated)
             </label>
-            <div className="flex bg-aivana-grey rounded-lg p-1">
+            <div className="flex bg-aivana-grey rounded-lg p-1 gap-1">
                  {profiles.map(p => (
                      <button
                         key={p.qualification}
                         onClick={() => setProfile(p)}
-                        className={`flex-1 text-xs px-2 py-1 rounded-md transition-colors ${profile.qualification === p.qualification ? 'bg-aivana-accent text-white font-semibold' : 'text-gray-300 hover:bg-aivana-light-grey'}`}
+                        className={`flex-1 text-xs px-2 py-1.5 rounded-md transition-colors ${profile.qualification === p.qualification ? 'bg-aivana-accent text-white font-semibold' : 'text-gray-400 hover:text-white hover:bg-aivana-light-grey'}`}
                      >
                          {p.qualification}
                      </button>
@@ -48,6 +53,28 @@ const DoctorProfileSwitcher: React.FC<{
     );
 };
 
+const LanguageSelector: React.FC<{ language: string; setLanguage: (lang: string) => void }> = ({ language, setLanguage }) => (
+    <div className="mt-4">
+        <label className="block text-xs font-medium text-gray-500 mb-2">
+            Response Language
+        </label>
+        <div className="relative">
+             <select
+                value={language}
+                onChange={(e) => setLanguage(e.target.value)}
+                className="w-full bg-aivana-grey text-white text-sm rounded-lg border border-transparent px-3 py-2 appearance-none focus:ring-1 focus:ring-aivana-accent outline-none cursor-pointer hover:bg-aivana-light-grey transition-colors"
+             >
+                <option value="English">English</option>
+                <option value="Hindi">Hindi</option>
+                <option value="Marathi">Marathi</option>
+             </select>
+             <div className="absolute inset-y-0 right-0 flex items-center px-3 pointer-events-none text-gray-400">
+                <Icon name="chevronDown" className="w-4 h-4" />
+             </div>
+        </div>
+    </div>
+);
+
 
 export const Sidebar: React.FC<SidebarProps> = ({
   isOpen,
@@ -56,120 +83,148 @@ export const Sidebar: React.FC<SidebarProps> = ({
   chats,
   onNewChat,
   onSelectChat,
+  activeChat,
   activeChatId,
   language,
   setLanguage,
   doctorProfile,
   setDoctorProfile,
-  onStartVedaSession,
+  onStartScribeSession,
+  activeView,
+  onShowPrintModal,
+  onShowAboutModal,
+  onGenerateCaseSummary,
 }) => {
+  const handleDownloadMtpJson = () => {
+    const dataStr = JSON.stringify(MTP_PROTOCOL_JSON, null, 2);
+    const dataBlob = new Blob([dataStr], { type: 'application/json' });
+    const url = URL.createObjectURL(dataBlob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'mtp_protocol_and_tests.json';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  const canGenerateSummary = activeChat && activeChat.messages.length > 0;
+
+  // Reorder GPTs to prioritize the ones from the screenshot design for the Explore list
+  const displayedGpts = useMemo(() => {
+      const priorityIds = ['doctor-ddx', 'doctor-handout', 'doctor-lab'];
+      const priority = gpts.filter(g => priorityIds.includes(g.id));
+      const others = gpts.filter(g => !priorityIds.includes(g.id));
+      return [...priority, ...others];
+  }, [gpts]);
+
   return (
     <>
+      {/* Overlay for mobile */}
+      {isOpen && (
+        <div
+          className="fixed inset-0 bg-black bg-opacity-60 z-20 md:hidden"
+          onClick={() => setIsOpen(false)}
+        ></div>
+      )}
+
+      {/* Sidebar */}
       <div
-        className={`fixed inset-0 bg-black/60 z-30 transition-opacity md:hidden ${
-          isOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'
-        }`}
-        onClick={() => setIsOpen(false)}
-      ></div>
-      <aside
-        className={`fixed top-0 left-0 h-full bg-aivana-dark-sider w-64 flex-shrink-0 flex flex-col p-4 z-40 transform transition-transform ${
+        className={`fixed top-0 left-0 w-72 h-full bg-black z-30 transform transition-transform duration-300 ease-in-out border-r border-gray-800 ${
           isOpen ? 'translate-x-0' : '-translate-x-full'
-        } md:relative md:translate-x-0`}
+        } md:relative md:translate-x-0 md:flex-shrink-0 flex flex-col`}
       >
-        <div className="flex items-center justify-between mb-6">
-          <div className="flex items-center gap-2">
-            <Icon name="logo" className="w-8 h-8 text-white" />
-            <h1 className="text-xl font-bold text-white">Aivana</h1>
-          </div>
-          <button
-            onClick={() => setIsOpen(false)}
-            className="md:hidden text-gray-400 hover:text-white p-1"
-            aria-label="Close menu"
-          >
-            <Icon name="close" />
+        {/* Header */}
+        <div className="p-4 flex-shrink-0 flex justify-between items-center mb-2">
+            <div className="flex items-center gap-2">
+                <Icon name="logo" className="w-6 h-6 text-white" />
+                <span className="font-bold text-lg text-white">Aivana</span>
+            </div>
+          <button onClick={() => setIsOpen(false)} className="md:hidden p-1 rounded-md hover:bg-gray-800 text-white">
+            <Icon name="close" className="w-6 h-6" />
           </button>
         </div>
-
-        <button
-          onClick={onStartVedaSession}
-          className="w-full flex items-center justify-center gap-3 px-4 py-3 mb-4 text-base font-semibold text-white bg-aivana-grey rounded-lg border border-aivana-light-grey hover:border-aivana-accent hover:bg-aivana-light-grey transition-all transform hover:scale-105"
-        >
-          <Icon name="sparkles" className="w-5 h-5 text-aivana-accent" />
-          Start Veda Session
-        </button>
         
-        <button
-          onClick={() => onNewChat()}
-          className="w-full flex items-center justify-center gap-2 px-4 py-2 mb-6 text-sm font-medium text-white bg-aivana-accent rounded-lg hover:bg-purple-700 transition-colors"
-        >
-          <Icon name="newChat" />
-          New Chat
-        </button>
+        {/* Primary Actions */}
+        <div className="px-3 pb-4 flex-shrink-0 space-y-3">
+            <button
+                onClick={onStartScribeSession}
+                className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all border border-gray-800 ${
+                    activeView === 'scribe' 
+                        ? 'bg-gray-800 text-white' 
+                        : 'bg-[#1c1c1c] hover:bg-gray-800 text-gray-200'
+                }`}
+            >
+                <Icon name="sparkles" className="w-5 h-5 text-aivana-accent" />
+                <span className="font-medium text-sm">Start Veda Session</span>
+            </button>
 
-        <div className="flex-1 overflow-y-auto pr-1 -mr-2 space-y-6">
-          <div>
-            <h2 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2 px-2">
-              Explore
-            </h2>
-            <nav className="space-y-1">
-              {gpts.map((gpt) => (
-                <button
-                  key={gpt.id}
-                  onClick={() => onNewChat(gpt)}
-                  className="w-full flex items-center gap-3 px-3 py-2 text-sm text-gray-200 rounded-md hover:bg-aivana-grey"
-                >
-                  <div className="w-6 h-6 flex items-center justify-center">{gpt.icon}</div>
-                  <span className="truncate">{gpt.title}</span>
-                </button>
-              ))}
-            </nav>
-          </div>
-          {chats.length > 0 && (
-            <div>
-              <h2 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2 px-2">
-                Recent Chats
-              </h2>
-              <nav className="space-y-1">
-                {chats.map((chat) => (
-                  <button
-                    key={chat.id}
-                    onClick={() => onSelectChat(chat.id)}
-                    className={`w-full flex items-center gap-3 px-3 py-2 text-sm rounded-md truncate ${
-                      activeChatId === chat.id
-                        ? 'bg-aivana-grey text-white'
-                        : 'text-gray-300 hover:bg-aivana-grey hover:text-white'
-                    }`}
-                  >
-                     <div className="w-6 h-6 flex-shrink-0 flex items-center justify-center">
-                        <Icon name="chatHistory" className="w-4 h-4"/>
-                    </div>
-                    <span className="truncate">{chat.title}</span>
-                  </button>
-                ))}
-              </nav>
-            </div>
-          )}
+            <button
+                onClick={() => onNewChat()}
+                className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-aivana-accent hover:bg-purple-700 text-white font-medium text-sm rounded-lg transition-colors"
+            >
+                <Icon name="newChat" className="w-5 h-5" />
+                New Chat
+            </button>
         </div>
+
+        {/* Navigation */}
+        <nav className="flex-1 overflow-y-auto px-3 py-2 space-y-6">
+            
+            {/* Explore Section */}
+            <div>
+                <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2 px-2">Explore</h3>
+                <div className="space-y-1">
+                    {displayedGpts.slice(0, 5).map((gpt) => (
+                        <button
+                            key={gpt.id}
+                            onClick={() => onNewChat(gpt)}
+                            className={`w-full text-left flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors group ${
+                                activeChatId && chats.find(c => c.id === activeChatId)?.gptId === gpt.id
+                                    ? 'bg-gray-800 text-white'
+                                    : 'text-gray-400 hover:text-white hover:bg-gray-800'
+                            }`}
+                        >
+                            <div className="text-gray-500 group-hover:text-white transition-colors">
+                                <Icon name={gpt.icon.props.name} className="w-4 h-4" />
+                            </div>
+                            <span className="text-sm truncate">
+                                {gpt.id === 'doctor-ddx' ? 'Differential Diagnosis' : gpt.title}
+                            </span>
+                        </button>
+                    ))}
+                </div>
+            </div>
+
+             {/* Tools Section */}
+            <div className="mt-4">
+                 <div className="space-y-1">
+                     <button
+                        onClick={onGenerateCaseSummary}
+                        disabled={!canGenerateSummary}
+                        className="w-full text-left flex items-center gap-3 px-3 py-2 rounded-lg transition-colors text-gray-400 hover:text-white hover:bg-gray-800 disabled:opacity-50"
+                    >
+                        <Icon name="document-text" className="w-4 h-4"/>
+                        <span className="text-sm">Case Summary</span>
+                    </button>
+                    <button
+                        onClick={onShowPrintModal}
+                        className="w-full text-left flex items-center gap-3 px-3 py-2 rounded-lg transition-colors text-gray-400 hover:text-white hover:bg-gray-800"
+                    >
+                        <Icon name="print" className="w-4 h-4"/>
+                        <span className="text-sm">Print Cards</span>
+                    </button>
+                 </div>
+            </div>
+
+        </nav>
         
-        <div className="mt-auto pt-4 border-t border-aivana-light-grey/20 space-y-4">
+        {/* Footer */}
+        <div className="p-4 border-t border-gray-800 flex-shrink-0 bg-black">
              <DoctorProfileSwitcher profile={doctorProfile} setProfile={setDoctorProfile} />
-            <div>
-                <label htmlFor="language-select" className="block text-xs font-medium text-gray-400 mb-1">
-                    Response Language
-                </label>
-                <select
-                    id="language-select"
-                    value={language}
-                    onChange={(e) => setLanguage(e.target.value)}
-                    className="w-full bg-aivana-grey border border-aivana-light-grey text-white text-sm rounded-lg focus:ring-aivana-accent focus:border-aivana-accent block p-2"
-                >
-                    <option value="English">English</option>
-                    <option value="Marathi">Marathi</option>
-                    <option value="Hindi">Hindi</option>
-                </select>
-            </div>
+             <LanguageSelector language={language} setLanguage={setLanguage} />
         </div>
-      </aside>
+      </div>
     </>
   );
 };

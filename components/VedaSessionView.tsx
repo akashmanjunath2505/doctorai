@@ -1,13 +1,14 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { DoctorProfile, TranscriptEntry, VedaInsightBlock } from '../types';
+import { DoctorProfile, TranscriptEntry, ScribeInsightBlock, ScribeInsightCategory } from '../types';
 import { Icon } from './Icon';
 import { useSpeechRecognition } from '../hooks/useSpeechRecognition';
-import { getVedaSpokenResponse, streamVedaInsights, diarizeTranscriptChunk } from '../services/geminiService';
+import { getScribeSpokenResponse, streamScribeInsights, diarizeTranscriptChunk, generateClinicalNote } from '../services/geminiService';
 import { synthesizeSpeech } from '../services/googleTtsService';
 import { TypingIndicator } from './TypingIndicator';
+import { renderMarkdownToHTML } from '../utils/markdownRenderer';
 
 
-interface VedaSessionViewProps {
+interface ScribeSessionViewProps {
   onEndSession: () => void;
   doctorProfile: DoctorProfile;
   language: string;
@@ -19,12 +20,16 @@ const languageToCodeMap: Record<string, string> = {
     'Hindi': 'hi-IN',
 };
 
-export const VedaSessionView: React.FC<VedaSessionViewProps> = ({ onEndSession, doctorProfile, language }) => {
+export const ScribeSessionView: React.FC<ScribeSessionViewProps> = ({ onEndSession, doctorProfile, language }) => {
+    const [consentGiven, setConsentGiven] = useState(false);
     const [transcriptHistory, setTranscriptHistory] = useState<TranscriptEntry[]>([]);
-    const [insights, setInsights] = useState<VedaInsightBlock[]>([]);
+    const [insights, setInsights] = useState<ScribeInsightBlock[]>([]);
     const [isVedaSpeaking, setIsVedaSpeaking] = useState(false);
     const [isDiarizing, setIsDiarizing] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const [clinicalNote, setClinicalNote] = useState('');
+    const [isGeneratingNote, setIsGeneratingNote] = useState(false);
+
 
     const audioRef = useRef<HTMLAudioElement | null>(null);
     const transcriptEndRef = useRef<HTMLDivElement | null>(null);
@@ -58,7 +63,7 @@ export const VedaSessionView: React.FC<VedaSessionViewProps> = ({ onEndSession, 
         if (fullTranscript.length < 50) return;
 
         try {
-            const stream = streamVedaInsights(fullTranscript, doctorProfile, language);
+            const stream = streamScribeInsights(fullTranscript, doctorProfile, language);
             for await (const result of stream) {
                 if(result.insights) {
                     setInsights(result.insights);
@@ -84,7 +89,7 @@ export const VedaSessionView: React.FC<VedaSessionViewProps> = ({ onEndSession, 
         };
 
         const question = text.toLowerCase().split('veda')[1]?.trim() || "please summarize the conversation so far";
-        const responseText = await getVedaSpokenResponse(question, doctorProfile, language);
+        const responseText = await getScribeSpokenResponse(question, doctorProfile, language);
         
         const audioSrc = await synthesizeSpeech(responseText, langCode);
 
@@ -155,6 +160,43 @@ export const VedaSessionView: React.FC<VedaSessionViewProps> = ({ onEndSession, 
         }
     }, [isListening, startListening, stopListening]);
 
+    const handleEndSession = () => {
+        if(window.confirm("Are you sure you want to end the session? The transcript and generated note will be permanently deleted.")) {
+            stopListening();
+            onEndSession();
+        }
+    }
+
+    const handleGenerateNote = useCallback(async () => {
+        const fullTranscript = transcriptHistoryRef.current
+            .filter(t => !t.isProcessing && t.text)
+            .map(t => `${t.speaker}: ${t.text}`).join('\n');
+        
+        if (fullTranscript.trim().length < 50) {
+            setError("Not enough conversation to generate a note.");
+            return;
+        }
+
+        setIsGeneratingNote(true);
+        setError(null);
+        try {
+            const note = await generateClinicalNote(fullTranscript, doctorProfile, language);
+            setClinicalNote(note);
+        } catch(e) {
+            console.error("Note generation error", e);
+            setError("Failed to generate clinical note.");
+        } finally {
+            setIsGeneratingNote(false);
+        }
+
+    }, [doctorProfile, language]);
+    
+    const handleCopyNote = () => {
+        navigator.clipboard.writeText(clinicalNote)
+            .then(() => alert("Note copied to clipboard!"))
+            .catch(err => alert("Failed to copy note."));
+    };
+
     useEffect(() => {
         if (transcriptHistory.length > 0 && !isDiarizing) {
             if (insightTimeoutRef.current) clearTimeout(insightTimeoutRef.current);
@@ -190,6 +232,19 @@ export const VedaSessionView: React.FC<VedaSessionViewProps> = ({ onEndSession, 
         return <p className="text-gray-500">Click the microphone to start transcribing</p>;
     }
 
+    if (!consentGiven) {
+        return <ConsentScreen onConsent={() => setConsentGiven(true)} />;
+    }
+
+    const insightOrder: ScribeInsightCategory[] = ['Questions to Ask', 'Differential Diagnosis', 'Labs to Consider', 'General Note'];
+    const sortedInsights = [...insights].sort((a, b) => {
+        const indexA = insightOrder.indexOf(a.category);
+        const indexB = insightOrder.indexOf(b.category);
+        if (indexA === -1) return 1;
+        if (indexB === -1) return -1;
+        return indexA - indexB;
+    });
+
 
     return (
         <div className="flex flex-col h-full w-full bg-aivana-dark animate-fadeInUp">
@@ -197,49 +252,91 @@ export const VedaSessionView: React.FC<VedaSessionViewProps> = ({ onEndSession, 
             {/* Header */}
             <header className="flex items-center justify-between p-4 border-b border-aivana-light-grey flex-shrink-0">
                 <div className="flex items-center gap-3">
-                    <Icon name="sparkles" className="w-6 h-6 text-aivana-accent" />
-                    <h1 className="text-xl font-bold text-white">Veda Session</h1>
+                    <Icon name="waveform" className="w-6 h-6 text-aivana-accent" />
+                    <h1 className="text-xl font-bold text-white">Ambient Scribe Session</h1>
                 </div>
-                <button onClick={onEndSession} className="px-4 py-2 text-sm font-semibold bg-red-600/80 hover:bg-red-600 rounded-lg transition-colors">
+                <button onClick={handleEndSession} className="px-4 py-2 text-sm font-semibold bg-red-600/80 hover:bg-red-600 rounded-lg transition-colors">
                     End Session
                 </button>
             </header>
 
             {/* Body */}
             <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
-                {/* Transcript Panel */}
-                <div className="flex-1 md:w-2/3 flex flex-col p-4 overflow-hidden">
-                    <h2 className="text-lg font-semibold mb-2">Live Transcript</h2>
-                    <div className="flex-1 overflow-y-auto space-y-4 pr-2">
-                        {transcriptHistory.map(entry => (
-                            <div key={entry.id} className={`flex flex-col ${entry.speaker === 'Doctor' ? 'items-start' : 'items-end'}`}>
-                                <div className={`text-xs mb-1 font-semibold ${entry.speaker === 'Doctor' ? 'text-aivana-accent' : 'text-blue-400'}`}>{entry.speaker}</div>
-                                <div className={`px-4 py-2 rounded-lg max-w-xl ${entry.speaker === 'Doctor' ? 'bg-aivana-light-grey' : 'bg-blue-800/50'}`}>
-                                    {entry.isProcessing ? <TypingIndicator /> : entry.text}
+                {/* Left Panel: Transcript & Note */}
+                <div className="flex-1 md:w-2/3 flex flex-col overflow-hidden">
+                    {/* Transcript Panel */}
+                    <div className="flex-1 flex flex-col p-4 overflow-hidden">
+                        <h2 className="text-lg font-semibold mb-2">Live Transcript</h2>
+                        <div className="flex-1 bg-aivana-dark-sider/50 rounded-lg p-3 overflow-y-auto space-y-4 pr-2">
+                            {transcriptHistory.map(entry => (
+                                <div key={entry.id} className={`flex flex-col ${entry.speaker === 'Doctor' ? 'items-start' : 'items-end'}`}>
+                                    <div className={`text-xs mb-1 font-semibold ${entry.speaker === 'Doctor' ? 'text-aivana-accent' : 'text-blue-400'}`}>{entry.speaker}</div>
+                                    <div className={`px-4 py-2 rounded-lg max-w-xl ${entry.speaker === 'Doctor' ? 'bg-aivana-light-grey' : 'bg-blue-800/50'}`}>
+                                        {entry.isProcessing ? <TypingIndicator /> : entry.text}
+                                    </div>
                                 </div>
+                            ))}
+                             {transcriptHistory.length === 0 && !isListening && (
+                                <div className="flex-1 flex flex-col items-center justify-center text-center text-gray-500 h-full">
+                                    <Icon name="microphone" className="w-8 h-8 mb-2" />
+                                    <p>Start the session to begin transcription.</p>
+                                </div>
+                            )}
+                            <div ref={transcriptEndRef} />
+                        </div>
+                    </div>
+                    {/* Note Panel */}
+                    <div className="flex-1 flex flex-col p-4 border-t border-aivana-light-grey overflow-hidden">
+                         <div className="flex justify-between items-center mb-2 flex-shrink-0">
+                            <h2 className="text-lg font-semibold">Draft Clinical Note (SOAP)</h2>
+                            <div className="flex items-center gap-2">
+                                {clinicalNote && !isGeneratingNote && (
+                                    <button onClick={handleCopyNote} className="px-3 py-1.5 text-xs font-semibold bg-aivana-grey hover:bg-aivana-light-grey rounded-lg transition-colors">
+                                        Copy Note
+                                    </button>
+                                )}
+                                <button onClick={handleGenerateNote} disabled={isGeneratingNote || transcriptHistory.length === 0} className="px-3 py-1.5 text-xs font-semibold bg-aivana-accent hover:bg-purple-700 rounded-lg transition-colors disabled:opacity-50">
+                                    {isGeneratingNote ? "Generating..." : clinicalNote ? "Regenerate" : "Generate Note"}
+                                </button>
                             </div>
-                        ))}
-                        <div ref={transcriptEndRef} />
+                        </div>
+                        <div className="flex-1 bg-aivana-dark-sider/50 rounded-lg p-1 overflow-auto">
+                            {isGeneratingNote && (
+                                <div className="flex items-center justify-center h-full text-gray-400">
+                                    <div className="w-6 h-6 border-2 border-t-transparent border-white rounded-full animate-spin mr-3"></div>
+                                    <span>Composing SOAP note...</span>
+                                </div>
+                            )}
+                            {!isGeneratingNote && clinicalNote && (
+                                <div className="prose prose-sm prose-invert p-3 max-w-none" dangerouslySetInnerHTML={{ __html: renderMarkdownToHTML(clinicalNote)}}></div>
+                            )}
+                            {!isGeneratingNote && !clinicalNote && (
+                                <div className="flex items-center justify-center h-full text-gray-500 text-center">
+                                    <p>A draft clinical note will appear here after generation.</p>
+                                </div>
+                            )}
+                        </div>
                     </div>
                 </div>
+
 
                 {/* Insights Panel */}
                 <aside className="w-full md:w-1/3 bg-aivana-dark-sider p-4 border-l border-aivana-light-grey flex flex-col overflow-y-auto">
                     <h2 className="text-lg font-semibold mb-4 text-white">Veda's Insights</h2>
-                     {insights.length === 0 && !isListening && (
+                     {sortedInsights.length === 0 && !isListening && (
                         <div className="flex-1 flex flex-col items-center justify-center text-center text-gray-500">
-                            <Icon name="waveform" className="w-8 h-8 mb-2" />
+                            <Icon name="lightbulb" className="w-8 h-8 mb-2" />
                             <p>Start the session to see real-time insights.</p>
                         </div>
                     )}
-                     {insights.length === 0 && isListening && (
+                     {sortedInsights.length === 0 && isListening && (
                         <div className="flex-1 flex flex-col items-center justify-center text-center text-gray-500">
                             <Icon name="spinner" className="w-8 h-8 mb-2 animate-pulse" />
                             <p>Listening for key information...</p>
                         </div>
                     )}
                     <div className="space-y-4">
-                        {insights.map((insight, index) => (
+                        {sortedInsights.map((insight, index) => (
                             <div key={index} className="bg-aivana-grey p-3 rounded-lg animate-fadeInUp" style={{animationDelay: `${index * 100}ms`}}>
                                 <h3 className="font-semibold text-aivana-accent text-sm mb-2">{insight.category}</h3>
                                 <ul className="list-disc list-inside space-y-1 text-sm text-gray-300">
@@ -253,7 +350,7 @@ export const VedaSessionView: React.FC<VedaSessionViewProps> = ({ onEndSession, 
                 </aside>
             </div>
              {/* Footer / Controls */}
-            <footer className="flex flex-col p-4 border-t border-aivana-light-grey items-center justify-center">
+            <footer className="flex flex-col p-4 border-t border-aivana-light-grey items-center justify-center flex-shrink-0">
                 {error && <div className="text-red-400 p-2 text-center bg-red-900/50 rounded-md text-sm mb-2 max-w-xl">{error}</div>}
                  <div className="h-8 mb-2 flex items-center justify-center text-sm text-center">
                     {getStatusText()}
@@ -271,3 +368,35 @@ export const VedaSessionView: React.FC<VedaSessionViewProps> = ({ onEndSession, 
         </div>
     );
 };
+
+const ConsentScreen: React.FC<{onConsent: () => void}> = ({ onConsent }) => {
+    const [checked, setChecked] = useState(false);
+    
+    return (
+        <div className="flex flex-col h-full w-full items-center justify-center p-6 text-center animate-fadeInUp">
+            <div className="w-full max-w-lg bg-aivana-light-grey p-8 rounded-xl border border-aivana-light-grey/50">
+                <Icon name="shieldCheck" className="w-12 h-12 text-aivana-accent mx-auto mb-4" />
+                <h1 className="text-2xl font-bold text-white mb-2">Patient Consent Required</h1>
+                <p className="text-gray-400 mb-6">
+                    Before starting the Ambient Scribe, please confirm you have obtained and documented verbal consent from the patient to record this session for clinical documentation purposes.
+                </p>
+                <label className="flex items-center justify-center space-x-3 p-3 rounded-md bg-aivana-dark hover:bg-aivana-dark/70 cursor-pointer">
+                    <input 
+                        type="checkbox" 
+                        checked={checked} 
+                        onChange={(e) => setChecked(e.target.checked)} 
+                        className="form-checkbox h-5 w-5 text-aivana-accent bg-aivana-grey border-aivana-light-grey focus:ring-aivana-accent"
+                    />
+                    <span className="text-sm text-gray-300">I confirm that verbal consent has been obtained from the patient.</span>
+                </label>
+                 <button 
+                    onClick={onConsent}
+                    disabled={!checked}
+                    className="w-full mt-6 bg-aivana-accent hover:bg-purple-700 text-white font-semibold py-3 px-4 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                 >
+                    Proceed to Scribe Session
+                 </button>
+            </div>
+        </div>
+    )
+}

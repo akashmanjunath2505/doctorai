@@ -1,13 +1,13 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { Chat, Message, UserRole, PreCodedGpt, DoctorProfile, PromptInsight } from '../types';
+import { Chat, Message, UserRole, PreCodedGpt, DoctorProfile, PromptInsight, LabParameterInput, ClinicalProtocol } from '../types';
 import { ChatInput } from './ChatInput';
 import { ChatMessage } from './ChatMessage';
 import { Icon } from './Icon';
 import { PRE_CODED_GPTS } from '../constants';
 import { streamChatResponse, getPromptInsights } from '../services/geminiService';
 import { synthesizeSpeech } from '../services/googleTtsService';
-import { Content } from '@google/genai';
 import { PromptInsightsPanel } from './PromptInsightsPanel';
+import { PregnancyRiskAssessmentForm } from './PregnancyRiskAssessmentForm';
 
 interface ChatViewProps {
   chat: Chat | null;
@@ -24,6 +24,7 @@ interface ChatViewProps {
   setPendingFirstMessage: (message: string | null) => void;
   isInsightsPanelOpen: boolean;
   setIsInsightsPanelOpen: (isOpen: boolean) => void;
+  knowledgeBaseProtocols: ClinicalProtocol[];
 }
 
 const languageToCodeMap: Record<string, string> = {
@@ -31,6 +32,96 @@ const languageToCodeMap: Record<string, string> = {
     'Marathi': 'mr-IN',
     'Hindi': 'hi-IN',
 };
+
+const LabResultForm: React.FC<{ onSubmit: (params: LabParameterInput[]) => void }> = ({ onSubmit }) => {
+    const [params, setParams] = useState<LabParameterInput[]>([]);
+    const [currentParam, setCurrentParam] = useState<LabParameterInput>({ name: '', value: '', units: '', referenceRange: '' });
+
+    const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+        setCurrentParam({ ...currentParam, [e.target.name]: e.target.value });
+    };
+
+    const handleAddParam = () => {
+        if (currentParam.name.trim() && currentParam.value.trim()) {
+            setParams([...params, currentParam]);
+            setCurrentParam({ name: '', value: '', units: '', referenceRange: '' });
+        }
+    };
+    
+    const handleRemoveParam = (index: number) => {
+        setParams(params.filter((_, i) => i !== index));
+    };
+
+    const handleSubmit = (e: React.FormEvent) => {
+        e.preventDefault();
+        if (params.length === 0 && (!currentParam.name.trim() || !currentParam.value.trim())) {
+            return; // Don't submit an empty form
+        }
+        let finalParams = [...params];
+        // Add the currently entered param if it's valid, even if "Add" wasn't clicked
+        if (currentParam.name.trim() && currentParam.value.trim()) {
+            finalParams.push(currentParam);
+        }
+        if (finalParams.length > 0) {
+            onSubmit(finalParams);
+        }
+    };
+
+    const canAdd = currentParam.name.trim() && currentParam.value.trim();
+
+    return (
+        <div className="flex-1 flex flex-col items-center justify-center p-4 animate-fadeInUp">
+            <div className="w-full max-w-3xl bg-aivana-light-grey rounded-xl p-6 md:p-8 border border-aivana-light-grey/50">
+                <div className="flex items-center gap-3 mb-4">
+                    <Icon name="lab" className="w-8 h-8 text-aivana-accent" />
+                    <h2 className="text-2xl font-bold text-white">Lab Result Analyzer</h2>
+                </div>
+                <p className="text-gray-400 mb-6 text-sm">Enter one or more lab parameters for a structured, evidence-based analysis.</p>
+                
+                <form onSubmit={handleSubmit} className="space-y-4">
+                    {/* Parameter Input Fields */}
+                    <div className="grid grid-cols-1 md:grid-cols-5 gap-3 items-end p-3 bg-aivana-dark rounded-lg">
+                        <div className="md:col-span-2">
+                            <label htmlFor="name" className="block text-xs font-medium text-gray-300 mb-1">Parameter Name</label>
+                            <input type="text" name="name" id="name" value={currentParam.name} onChange={handleInputChange} className="w-full bg-aivana-grey p-2 rounded-md border border-aivana-light-grey/80 focus:ring-aivana-accent focus:border-aivana-accent" placeholder="e.g., Hemoglobin" />
+                        </div>
+                        <div>
+                            <label htmlFor="value" className="block text-xs font-medium text-gray-300 mb-1">Value</label>
+                            <input type="text" name="value" id="value" value={currentParam.value} onChange={handleInputChange} className="w-full bg-aivana-grey p-2 rounded-md border border-aivana-light-grey/80 focus:ring-aivana-accent focus:border-aivana-accent" placeholder="e.g., 10.5" />
+                        </div>
+                        <div>
+                            <label htmlFor="units" className="block text-xs font-medium text-gray-300 mb-1">Units</label>
+                            <input type="text" name="units" id="units" value={currentParam.units} onChange={handleInputChange} className="w-full bg-aivana-grey p-2 rounded-md border border-aivana-light-grey/80 focus:ring-aivana-accent focus:border-aivana-accent" placeholder="e.g., g/dL" />
+                        </div>
+                        <button type="button" onClick={handleAddParam} disabled={!canAdd} className="w-full bg-aivana-accent/80 hover:bg-aivana-accent text-white font-semibold py-2 px-3 rounded-md transition-colors flex items-center justify-center gap-2 disabled:bg-aivana-light-grey/50 disabled:cursor-not-allowed">
+                            <Icon name="newChat" className="w-5 h-5"/> Add
+                        </button>
+                    </div>
+
+                    {/* Display Added Parameters */}
+                    {params.length > 0 && (
+                        <div className="space-y-2 max-h-48 overflow-y-auto p-2">
+                            {params.map((param, index) => (
+                                <div key={index} className="flex items-center justify-between p-2 bg-aivana-dark rounded-md text-sm">
+                                    <span className="font-semibold text-white">{param.name}:</span>
+                                    <span className="text-gray-300">{param.value} {param.units}</span>
+                                    <span className="text-gray-400 text-xs">(Ref: {param.referenceRange || 'N/A'})</span>
+                                    <button onClick={() => handleRemoveParam(index)} className="p-1 text-red-400 hover:text-red-300"><Icon name="close" className="w-4 h-4"/></button>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                    
+                    <button type="submit" className="w-full !mt-6 bg-aivana-accent hover:bg-purple-700 text-white font-semibold py-3 px-4 rounded-lg transition-colors flex items-center justify-center gap-2">
+                        <Icon name="diagnosis" className="w-5 h-5"/>
+                        Submit for Analysis
+                    </button>
+                </form>
+            </div>
+        </div>
+    );
+};
+
 
 export const ChatView: React.FC<ChatViewProps> = ({
   chat,
@@ -47,6 +138,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
   setPendingFirstMessage,
   isInsightsPanelOpen,
   setIsInsightsPanelOpen,
+  knowledgeBaseProtocols,
 }) => {
   const [isSending, setIsSending] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -59,6 +151,9 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
 
   const activeGpt = chat?.gptId ? PRE_CODED_GPTS.find(g => g.id === chat.gptId) : undefined;
+  const shouldShowRiskAssessmentForm = chat && activeGpt?.customComponentId === 'PregnancyRiskAssessment' && chat.messages.filter(m => m.sender === 'USER').length === 0;
+  const shouldShowLabResultForm = chat && activeGpt?.customComponentId === 'LabResultAnalysis' && chat.messages.filter(m => m.sender === 'USER').length === 0;
+
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
@@ -121,6 +216,13 @@ export const ChatView: React.FC<ChatViewProps> = ({
         }
     }
   }, [playingMessageId, language]);
+  
+  const handleUpdateMessage = (messageId: string, updates: Partial<Message>) => {
+      if (!chat) return;
+      const updatedMessages = chat.messages.map(m => m.id === messageId ? {...m, ...updates} : m);
+      updateChat(chat.id, updatedMessages);
+  };
+
 
   const handleSendMessage = useCallback(async (message: string) => {
     if (!chat) return;
@@ -143,23 +245,17 @@ export const ChatView: React.FC<ChatViewProps> = ({
     const currentMessages = chat.messages ? [...chat.messages, userMessage] : [userMessage];
     updateChat(chat.id, [...currentMessages, aiMessagePlaceholder]);
 
-    const history: Content[] = currentMessages
-      .map(msg => ({
-        role: msg.sender === 'USER' ? 'user' : 'model',
-        parts: [{ text: msg.text }],
-    }));
-
     const stream = streamChatResponse({
         message,
-        history,
+        history: currentMessages,
         userRole,
         language,
         activeGpt,
         isDoctorVerified,
         doctorProfile,
+        knowledgeBaseProtocols,
     });
 
-    let fullResponseText = '';
     let finalMessage: Message = { ...aiMessagePlaceholder, text: '' };
 
     try {
@@ -168,23 +264,22 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 if (chunk.error.includes("license verification")) {
                     setPendingVerificationMessage(message);
                     setShowVerificationModal(true);
-                    const verificationMessage: Message = { ...aiMessagePlaceholder, text: "Verification required to proceed. Please verify your license to continue." };
-                    updateChat(chat.id, [...currentMessages, verificationMessage]);
+                    finalMessage.text = "Verification required to proceed. Please verify your license to continue.";
                 } else {
                     finalMessage.text = chunk.error;
-                    updateChat(chat.id, [...currentMessages, finalMessage]);
                 }
+                updateChat(chat.id, [...currentMessages, finalMessage]);
                 setIsSending(false);
                 return; 
             }
 
             if (chunk.textChunk) {
-                fullResponseText += chunk.textChunk;
-                finalMessage.text = fullResponseText;
+                finalMessage.text += chunk.textChunk;
             }
-            if (chunk.citations) {
-                finalMessage.citations = chunk.citations;
-            }
+            if (chunk.source_protocol_id) finalMessage.source_protocol_id = chunk.source_protocol_id;
+            if (chunk.source_protocol_last_reviewed) finalMessage.source_protocol_last_reviewed = chunk.source_protocol_last_reviewed;
+            if (chunk.action_type) finalMessage.action_type = chunk.action_type;
+            if (chunk.citations) finalMessage.citations = chunk.citations;
             if (chunk.structuredData) {
                 finalMessage.structuredData = chunk.structuredData;
                 finalMessage.text = chunk.structuredData.summary; 
@@ -199,7 +294,43 @@ export const ChatView: React.FC<ChatViewProps> = ({
     } finally {
         setIsSending(false);
     }
-  }, [chat, language, updateChat, userRole, activeGpt, isDoctorVerified, doctorProfile, setPendingVerificationMessage, setShowVerificationModal, fetchInsightsForPrompt]);
+  }, [chat, language, updateChat, userRole, activeGpt, isDoctorVerified, doctorProfile, setPendingVerificationMessage, setShowVerificationModal, fetchInsightsForPrompt, knowledgeBaseProtocols]);
+  
+  const handleRiskAssessmentSubmit = (formData: {
+    age: string;
+    bmi: string;
+    systolicBP: string;
+    diastolicBP: string;
+    glucose: string;
+    history: string[];
+  }) => {
+      const prompt = `
+          Analyze the following patient data for pregnancy risk stratification.
+          - Age: ${formData.age}
+          - BMI: ${formData.bmi}
+          - Blood Pressure: ${formData.systolicBP}/${formData.diastolicBP} mmHg
+          - Fasting Blood Glucose: ${formData.glucose} mg/dL
+          - Medical History: ${formData.history.length > 0 ? formData.history.join(', ') : 'None reported'}
+          
+          Based on FOGSI and WHO guidelines, provide a risk level (Low, Medium, High), identify the key contributing risk factors, and suggest a clear, actionable management plan. Your response must be in structured JSON format.
+      `;
+      handleSendMessage(prompt);
+  };
+  
+  const handleLabResultSubmit = (labParams: LabParameterInput[]) => {
+      const paramStrings = labParams.map(p => 
+          `- Parameter: ${p.name}, Value: ${p.value} ${p.units}, Reference Range: ${p.referenceRange || 'N/A'}`
+      );
+      
+      const prompt = `
+          Analyze the following lab results for a pregnant patient.
+          ${paramStrings.join('\n')}
+          
+          Based on FOGSI and WHO guidelines, provide a detailed interpretation for each parameter, an overall summary, and flag any critical or abnormal values with recommended next steps. Your response must be in structured JSON format.
+      `;
+      handleSendMessage(prompt);
+  };
+
 
   useEffect(() => {
     if (isDoctorVerified && pendingVerificationMessage && chat) {
@@ -240,9 +371,9 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
   if (!chat) {
     return (
-      <div className="flex-1 flex flex-col h-full">
+      <div className="flex-1 flex flex-col h-full relative bg-aivana-dark">
           <WelcomeScreen onNewChat={onNewChat} />
-          <div className="p-4 w-full max-w-4xl mx-auto">
+          <div className="p-4 w-full max-w-4xl mx-auto z-10">
               <ChatInput 
                 onSendMessage={handleSendMessageOnWelcome} 
                 isSending={isSending} 
@@ -252,6 +383,15 @@ export const ChatView: React.FC<ChatViewProps> = ({
       </div>
     );
   }
+  
+  if (shouldShowRiskAssessmentForm) {
+      return <PregnancyRiskAssessmentForm onSubmit={handleRiskAssessmentSubmit} />;
+  }
+  
+  if (shouldShowLabResultForm) {
+      return <LabResultForm onSubmit={handleLabResultSubmit} />;
+  }
+
 
   return (
     <div className="flex-1 flex h-full overflow-hidden">
@@ -280,6 +420,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   message={message}
                   onToggleTts={handleToggleTts}
                   playingMessageId={playingMessageId}
+                  onUpdateMessage={handleUpdateMessage}
               />
           ))}
           <div ref={messagesEndRef} />
@@ -314,34 +455,68 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
 
 const WelcomeScreen: React.FC<{ onNewChat: (gpt?: PreCodedGpt) => void }> = ({ onNewChat }) => {
+    const findGpt = (id: string) => PRE_CODED_GPTS.find(g => g.id === id);
+
+    const cards = [
+        {
+            id: 'doctor-ddx',
+            title: 'Differential Diagnosis',
+            description: 'Input symptoms to receive a structured list of potential diagnoses.',
+            icon: 'diagnosis',
+        },
+        {
+            id: 'doctor-handout',
+            title: 'Patient Handout Generator',
+            description: 'Create easy-to-understand patient handouts for various conditions.',
+            icon: 'handout',
+        },
+        {
+            id: 'doctor-lab',
+            title: 'Lab Result Analyzer',
+            description: 'Interpret lab results, identify abnormalities, and suggest next steps.',
+            icon: 'lab',
+        },
+    ];
+
     return (
-        <div className="flex-1 flex flex-col items-center justify-center p-6 text-center overflow-hidden">
-            <div className="max-w-4xl w-full animate-fadeInUp" style={{ animationFillMode: 'backwards' }}>
-                <Icon name="logo" className="w-16 h-16 mx-auto mb-4 text-white" />
-                <h1 className="text-3xl md:text-4xl font-bold text-white mb-2" style={{ animationDelay: '100ms' }}>
-                    Welcome to Aivana for Doctors
-                </h1>
-                <p className="text-gray-400 mb-10 max-w-2xl mx-auto" style={{ animationDelay: '200ms' }}>
-                    Your AI partner for clinical excellence. Select a specialized tool or start a general conversation below.
-                </p>
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                    {PRE_CODED_GPTS.map((gpt, index) => (
+        <div className="flex-1 flex flex-col items-center justify-center p-6 text-center relative z-0 animate-fadeInUp bg-aivana-dark">
+            {/* Cube Icon - Matches screenshot */}
+            <div className="mb-8 text-white">
+                <svg width="80" height="80" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
+                    <polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline>
+                    <line x1="12" y1="22.08" x2="12" y2="12"></line>
+                </svg>
+            </div>
+
+            <h1 className="text-4xl font-bold text-white mb-4">
+                Welcome to Aivana for Doctors
+            </h1>
+            <p className="text-gray-400 mb-12 text-lg max-w-2xl mx-auto leading-relaxed">
+                Your AI partner for clinical excellence. Select a specialized tool or start a general conversation below.
+            </p>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 max-w-6xl w-full">
+                {cards.map((card) => {
+                     const gpt = findGpt(card.id);
+                     return (
                         <button
-                            key={gpt.id}
+                            key={card.id}
                             onClick={() => onNewChat(gpt)}
-                            className="text-left p-4 bg-aivana-light-grey/60 hover:bg-aivana-light-grey rounded-lg transition-all transform hover:scale-105 group animate-fadeInUp"
-                            style={{ animationDelay: `${300 + index * 100}ms`, animationFillMode: 'backwards' }}
+                            className="flex flex-col text-left p-6 bg-[#1c1c1c] hover:bg-[#2a2a2a] border border-[#333] rounded-xl transition-all group h-full transform hover:-translate-y-1"
                         >
-                            <div className="flex items-center gap-3">
-                                <div className="p-2 bg-aivana-grey rounded-md">
-                                    {gpt.icon}
-                                </div>
-                                <h3 className="font-semibold text-white">{gpt.title}</h3>
+                            <div className="mb-4 text-gray-400 group-hover:text-white">
+                                <Icon name={card.icon} className="w-6 h-6" />
                             </div>
-                            <p className="text-xs text-gray-400 mt-2">{gpt.description}</p>
+                            <h3 className="text-lg font-semibold text-white mb-2">
+                                {card.title}
+                            </h3>
+                            <p className="text-sm text-gray-400 leading-relaxed">
+                                {card.description}
+                            </p>
                         </button>
-                    ))}
-                </div>
+                    );
+                })}
             </div>
         </div>
     );
