@@ -1,162 +1,260 @@
 
-import { useState, useRef, useCallback, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { GoogleGenAI } from "@google/genai";
 
-// This is a browser-only feature.
-// Add SpeechRecognition to the window object for TypeScript
+// Configuration for the Gemini Live API
+const MODEL_NAME = 'gemini-2.5-flash-native-audio-preview-09-2025';
+
+// Add type augmentation for webkitAudioContext
 declare global {
   interface Window {
-    SpeechRecognition: new () => SpeechRecognition;
-    webkitSpeechRecognition: new () => SpeechRecognition;
+    webkitAudioContext: typeof AudioContext;
   }
 }
 
-interface SpeechRecognition extends EventTarget {
-  continuous: boolean;
-  interimResults: boolean;
-  lang: string;
-  start: () => void;
-  stop: () => void;
-  abort: () => void;
-  onresult: (event: any) => void;
-  onerror: (event: any) => void;
-  onend: () => void;
+interface UseSpeechRecognitionReturn {
+  isListening: boolean;
+  transcript: string; // Accumulated finalized transcript
+  interimTranscript: string; // Current turn transcript (streaming)
+  startListening: () => void;
+  stopListening: () => void;
+  resetTranscript: () => void;
+  error: string | null;
+  supported: boolean;
 }
 
-export const useSpeechRecognition = (options: { lang: string }) => {
+// Helper: Convert Float32 audio data to Int16 PCM and then to Base64
+function floatTo16BitPCM(input: Float32Array): ArrayBuffer {
+    const output = new DataView(new ArrayBuffer(input.length * 2));
+    for (let i = 0; i < input.length; i++) {
+        let s = Math.max(-1, Math.min(1, input[i]));
+        s = s < 0 ? s * 0x8000 : s * 0x7FFF;
+        output.setInt16(i * 2, s, true); // Little endian
+    }
+    return output.buffer;
+}
+
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+    let binary = '';
+    const bytes = new Uint8Array(buffer);
+    const len = bytes.byteLength;
+    for (let i = 0; i < len; i++) {
+        binary += String.fromCharCode(bytes[i]);
+    }
+    return btoa(binary);
+}
+
+export const useSpeechRecognition = (options: { lang?: string } = {}): UseSpeechRecognitionReturn => {
   const [isListening, setIsListening] = useState(false);
   const [transcript, setTranscript] = useState('');
+  const [interimTranscript, setInterimTranscript] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const recognitionRef = useRef<SpeechRecognition | null>(null);
   
-  // Refs to track state without triggering effects
-  const isListeningRef = useRef(isListening);
-  const restartTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const supported = true;
 
-  useEffect(() => {
-      isListeningRef.current = isListening;
-  }, [isListening]);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const processorRef = useRef<ScriptProcessorNode | null>(null);
+  const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const wsRef = useRef<any>(null);
+  const currentTurnTextRef = useRef('');
+  const isCleaningUpRef = useRef(false);
 
+  // Initialize AI client safely
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
-  useEffect(() => {
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-      setError("Speech recognition is not supported in this browser. Please try Chrome or Edge.");
-      return;
-    }
-    
-    const recognition = new SpeechRecognition();
-    recognitionRef.current = recognition;
-    
-    // NETWORK ERROR FIX:
-    // Continuous mode in Chrome often leads to "network" errors after a short period or silence.
-    // We use continuous=false and manually restart on 'end' to create a stable loop.
-    recognition.continuous = false; 
-    recognition.interimResults = true;
-    recognition.lang = options.lang;
-    
-    recognition.onresult = (event: any) => {
-      let finalTranscript = '';
-      for (let i = event.resultIndex; i < event.results.length; ++i) {
-        if (event.results[i].isFinal) {
-          finalTranscript += event.results[i][0].transcript;
+  const cleanup = useCallback(async () => {
+    if (isCleaningUpRef.current) return;
+    isCleaningUpRef.current = true;
+
+    try {
+        // 1. Stop Audio Processing Nodes
+        if (processorRef.current) {
+            try {
+                processorRef.current.disconnect();
+                processorRef.current.onaudioprocess = null;
+            } catch (e) { console.warn("Error disconnecting processor", e) }
+            processorRef.current = null;
         }
-      }
-      if (finalTranscript) {
-          setTranscript(prev => {
-              // Heuristic to avoid duplicate appending if the engine sends the same finalized chunk
-              if (prev.endsWith(finalTranscript)) return prev;
-              return prev ? `${prev} ${finalTranscript}` : finalTranscript;
-          });
-      }
-    };
-    
-    recognition.onerror = (event: any) => {
-      if (event.error === 'no-speech') {
-          // Ignore no-speech, it just means silence
-          return; 
-      }
+        if (sourceRef.current) {
+            try { sourceRef.current.disconnect(); } catch (e) { console.warn("Error disconnecting source", e) }
+            sourceRef.current = null;
+        }
 
-      console.warn('Speech recognition error:', event.error);
-      
-      if (event.error === 'network') {
-           // Network error is handled by the onend loop usually, but we log it.
-           // We don't set user-visible error immediately to avoid UI flicker.
-      } else if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
-          setError('Microphone access denied.');
-          setIsListening(false);
-          isListeningRef.current = false;
-      } else {
-          // For other errors, stop.
-          if (event.error !== 'aborted') {
-             // Only show error if it persists; for now, rely on restart.
-          }
-      }
-    };
+        // 2. Stop Media Stream Tracks
+        if (streamRef.current) {
+            streamRef.current.getTracks().forEach(track => track.stop());
+            streamRef.current = null;
+        }
 
-    recognition.onend = () => {
-      // If we are still supposed to be listening, restart.
-      if (isListeningRef.current) {
-          // Small delay to prevent rapid-fire restart loops if something is broken
-          restartTimeoutRef.current = setTimeout(() => {
-              if (isListeningRef.current && recognitionRef.current) {
-                  try {
-                      recognitionRef.current.start();
-                  } catch (e) {
-                      console.error("Failed to restart recognition:", e);
-                  }
-              }
-          }, 100);
-      } else {
+        // 3. Close Audio Context Safely
+        if (audioContextRef.current) {
+            const ctx = audioContextRef.current;
+            audioContextRef.current = null; // Clear ref immediately
+            try {
+                if (ctx.state !== 'closed') {
+                    await ctx.close();
+                }
+            } catch (e) {
+                console.warn("Error closing AudioContext:", e);
+            }
+        }
+
+        // 4. Reset Session
+        wsRef.current = null;
+        
+        // 5. Flush pending text
+        if (currentTurnTextRef.current) {
+            const leftover = currentTurnTextRef.current;
+            setTranscript(prev => (prev + ' ' + leftover).trim());
+            currentTurnTextRef.current = '';
+            setInterimTranscript('');
+        }
+    } catch (error) {
+        console.error("Error during cleanup:", error);
+    } finally {
+        isCleaningUpRef.current = false;
+    }
+  }, []);
+
+  const stopListening = useCallback(async () => {
+    if (!isListening) return;
+    setIsListening(false);
+    await cleanup();
+  }, [isListening, cleanup]);
+
+  const startListening = useCallback(async () => {
+    if (isListening || isCleaningUpRef.current) return;
+    setError(null);
+
+    try {
+        // 1. Setup Audio Context
+        const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+        const audioContext = new AudioContextClass({ sampleRate: 16000 });
+        audioContextRef.current = audioContext;
+
+        // 2. Connect to Gemini Live
+        // IMPORTANT: inputAudioTranscription is an empty object to enable it with default settings.
+        // We strictly define the config to avoid 'Invalid Argument' errors.
+        const config = {
+            responseModalities: ['AUDIO'], 
+            speechConfig: {
+                voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } }
+            },
+            inputAudioTranscription: {},
+            systemInstruction: "You are a passive listener. Do not speak. Listen to the input audio and transcribe it internally.",
+        };
+
+        const sessionPromise = ai.live.connect({
+            model: MODEL_NAME,
+            config: config,
+            callbacks: {
+                onopen: () => {
+                    console.log("Gemini Live Session Connected");
+                    setIsListening(true);
+                },
+                onmessage: (message: any) => {
+                    // Handle Transcription
+                    const inputTranscription = message.serverContent?.inputTranscription;
+                    if (inputTranscription) {
+                        const text = inputTranscription.text;
+                        if (text) {
+                            currentTurnTextRef.current += text;
+                            setInterimTranscript(currentTurnTextRef.current);
+                        }
+                    }
+
+                    // Handle Turn Completion
+                    if (message.serverContent?.turnComplete) {
+                        if (currentTurnTextRef.current) {
+                             const finalized = currentTurnTextRef.current;
+                             setTranscript(prev => (prev + ' ' + finalized).trim());
+                             currentTurnTextRef.current = '';
+                             setInterimTranscript('');
+                        }
+                    }
+                },
+                onclose: () => {
+                    console.log("Gemini Live Session Closed");
+                    setIsListening(false);
+                },
+                onerror: (err: any) => {
+                    console.error("Gemini Live Session Error:", err);
+                    // Suppress harmless connection errors during teardown
+                    if (isListening) {
+                        setError("Connection interrupted. Please restart.");
+                        cleanup();
+                        setIsListening(false);
+                    }
+                }
+            }
+        });
+        
+        // Wait for connection before sending audio
+        const session = await sessionPromise;
+        wsRef.current = session;
+
+        // 3. Start Microphone Stream
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        streamRef.current = stream;
+
+        const source = audioContext.createMediaStreamSource(stream);
+        sourceRef.current = source;
+        
+        // Use ScriptProcessor for raw PCM access
+        const processor = audioContext.createScriptProcessor(4096, 1, 1);
+        processorRef.current = processor;
+
+        processor.onaudioprocess = (e) => {
+            if (!wsRef.current) return;
+
+            const inputData = e.inputBuffer.getChannelData(0);
+            const pcmBuffer = floatTo16BitPCM(inputData);
+            const base64Audio = arrayBufferToBase64(pcmBuffer);
+            
+            try {
+                wsRef.current.sendRealtimeInput({
+                    media: {
+                        mimeType: "audio/pcm;rate=16000",
+                        data: base64Audio
+                    }
+                });
+            } catch(err) {
+                // Silent fail if socket is closing
+            }
+        };
+
+        source.connect(processor);
+        processor.connect(audioContext.destination);
+
+    } catch (err: any) {
+        console.error("Failed to start listening:", err);
+        setError("Microphone access denied or connection failed.");
+        cleanup();
         setIsListening(false);
-      }
-    };
-    
+    }
+  }, [isListening, cleanup]);
+
+  const resetTranscript = useCallback(() => {
+    setTranscript('');
+    setInterimTranscript('');
+    currentTurnTextRef.current = '';
+  }, []);
+
+  useEffect(() => {
     return () => {
-      if (recognitionRef.current) {
-        isListeningRef.current = false;
-        recognitionRef.current.abort();
-      }
-      if (restartTimeoutRef.current) {
-          clearTimeout(restartTimeoutRef.current);
-      }
+        cleanup();
     };
-  }, [options.lang]);
+  }, [cleanup]);
 
-  const startListening = useCallback(() => {
-    if (recognitionRef.current) {
-      if (isListeningRef.current) return;
-
-      setTranscript(''); // Reset transcript on fresh start
-      setError(null);
-      isListeningRef.current = true;
-      setIsListening(true);
-
-      try {
-        recognitionRef.current.start();
-      } catch (e) {
-        console.error("Could not start recognition:", e);
-        setIsListening(false);
-        isListeningRef.current = false;
-      }
-    }
-  }, []);
-
-  const stopListening = useCallback(() => {
-    if (recognitionRef.current) {
-      setIsListening(false);
-      isListeningRef.current = false;
-      try {
-        recognitionRef.current.stop();
-        // Also abort to ensure it stops immediately and doesn't fire a restart
-        recognitionRef.current.abort();
-      } catch (e) {
-        console.error("Error stopping recognition:", e);
-      }
-      if (restartTimeoutRef.current) {
-          clearTimeout(restartTimeoutRef.current);
-      }
-    }
-  }, []);
-
-  return { isListening, transcript, error, startListening, stopListening };
+  return {
+    isListening,
+    transcript,
+    interimTranscript,
+    startListening,
+    stopListening,
+    resetTranscript,
+    error,
+    supported
+  };
 };

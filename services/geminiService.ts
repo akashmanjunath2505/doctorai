@@ -1,3 +1,4 @@
+
 // services/geminiService.ts
 
 import { GoogleGenAI, Type } from "@google/genai";
@@ -278,16 +279,30 @@ export const generateClinicalNote = async (
   doctorProfile: DoctorProfile,
   language: string
 ): Promise<string> => {
-  const systemInstruction = `You are an expert medical scribe AI named Aivana. Your task is to analyze the following transcript of a doctor-patient encounter and generate a concise, structured clinical note in the SOAP (Subjective, Objective, Assessment, Plan) format.
+  const systemInstruction = `You are an expert Medical Scribe AI named Aivana. 
+    Your task is to analyze the transcript of a doctor-patient encounter and generate a professional, highly structured Clinical Note in SOAP format.
 
+    CONTEXT:
     - Doctor's Profile: ${doctorProfile.qualification}.
-    - Language for Note: ${language}.
-    - The note must be in well-formatted markdown. Use headings for each section (e.g., '## Subjective').
-    - If a section has no relevant information in the transcript, state "Not discussed" or "Not assessed". Do not invent information.
-    - Extract chief complaints, history of present illness, relevant past medical history, and review of systems for the Subjective section.
-    - Extract vitals, physical exam findings, and lab results for the Objective section.
-    - Create a differential diagnosis or a primary diagnosis for the Assessment.
-    - List diagnostic tests, treatments, patient education, and follow-up instructions for the Plan.`;
+    - Language for Note: ${language} (Ensure medical terms are standard).
+
+    FORMATTING RULES (Strict Markdown):
+    1. Use the following EXACT headings (level 2 Markdown):
+       ## Subjective
+       ## Objective
+       ## Assessment
+       ## Plan
+    2. Use bullet points (*) for lists.
+    3. Use **bold** for key findings or labels (e.g., "**BP:** 120/80").
+    4. Keep it concise but clinically complete.
+    
+    CONTENT GUIDANCE:
+    - **Subjective**: Chief Complaint (CC), HPI, PMH, ROS. State "Not discussed" if absent.
+    - **Objective**: Vitals, Physical Exam findings, Lab results mentioned. State "Not assessed" if absent.
+    - **Assessment**: Primary diagnosis or differential diagnosis with brief rationale.
+    - **Plan**: Diagnostics ordered, medications prescribed (dose/freq), lifestyle advice, follow-up.
+
+    DO NOT invent information not present in the transcript.`;
 
   try {
     const response = await ai.models.generateContent({
@@ -306,25 +321,48 @@ export const generateClinicalNote = async (
 
 
 /**
- * Determines the speaker ("Doctor" or "Patient") for a transcript chunk.
+ * Determines the speaker ("Doctor" or "Patient") for a transcript chunk using context.
  */
 export const diarizeTranscriptChunk = async (
   chunk: string,
   history: string,
-  language: string
+  language: string,
+  doctorProfile: DoctorProfile
 ): Promise<{ speaker: 'Doctor' | 'Patient'; text: string }[] | null> => {
-  const systemInstruction = `You are an expert at speech diarization.
-    Your task is to analyze a new transcript chunk in the context of the recent conversation history and determine who is speaking: the "Doctor" or the "Patient".
-    - The conversation language is ${language}.
-    - Output a JSON array where each object has a "speaker" and "text" property.
-    - If you cannot determine the speaker, default to "Patient".`;
+  const systemInstruction = `You are an expert Medical Scribe and Diarization AI.
+    Your GOAL: Accurately identify if the text is spoken by the DOCTOR or the PATIENT.
+
+    CONTEXT:
+    - Doctor Profile: ${doctorProfile.qualification}.
+    - Language: ${language}.
+    - Setting: Clinical Consultation.
+
+    LINGUISTIC PROFILING (Speaker Identification Rules):
+    
+    1. **THE DOCTOR**
+       - Asks specific clinical questions ("How long?", "Does it hurt here?", "Any fever?").
+       - Gives commands or instructions ("Take a deep breath", "Lie down", "Open your mouth").
+       - Uses medical terminology to explain or summarize.
+       - Validates symptoms ("Okay", "I see").
+    
+    2. **THE PATIENT**
+       - Describes subjective experiences ("It feels like...", "I have a pain...").
+       - Answers questions directly ("Yes", "No", "Since yesterday").
+       - Expresses concern, fear, or doubt.
+       - Uses layperson language.
+
+    INSTRUCTIONS:
+    - Analyze the "New Chunk" in the context of the "History".
+    - If the history ends with a Doctor's question, the new chunk is likely a Patient's answer.
+    - If the text contains dialogue from BOTH (e.g., "Does it hurt?" "Yes"), split it into two entries.
+    - Output a JSON array.
+  `;
 
   const prompt = `
-    Recent History (for context):
-    ---
-    ${history || 'No history yet.'}
-    ---
-    New Transcript Chunk to Diarize:
+    Recent Conversation History:
+    ${history || '(Start of session)'}
+    
+    New Chunk to Diarize:
     "${chunk}"
   `;
   
@@ -353,6 +391,7 @@ export const diarizeTranscriptChunk = async (
     return JSON.parse(jsonText);
   } catch (error) {
     console.error('Error during diarization:', error);
+    // Fallback: return as is, assume Patient if we can't guess, or leave it to the UI to handle
     return null;
   }
 };

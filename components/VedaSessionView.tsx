@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { DoctorProfile, TranscriptEntry, ScribeInsightBlock, ScribeInsightCategory } from '../types';
 import { Icon } from './Icon';
@@ -15,7 +16,7 @@ interface ScribeSessionViewProps {
 }
 
 const languageToCodeMap: Record<string, string> = {
-    'English': 'en-IN',
+    'English': 'en-US',
     'Marathi': 'mr-IN',
     'Hindi': 'hi-IN',
 };
@@ -30,6 +31,9 @@ export const ScribeSessionView: React.FC<ScribeSessionViewProps> = ({ onEndSessi
     const [clinicalNote, setClinicalNote] = useState('');
     const [isGeneratingNote, setIsGeneratingNote] = useState(false);
 
+    // Buffering logic variables
+    const [transcriptBuffer, setTranscriptBuffer] = useState('');
+    const processingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     const audioRef = useRef<HTMLAudioElement | null>(null);
     const transcriptEndRef = useRef<HTMLDivElement | null>(null);
@@ -40,14 +44,17 @@ export const ScribeSessionView: React.FC<ScribeSessionViewProps> = ({ onEndSessi
         transcriptHistoryRef.current = transcriptHistory;
     }, [transcriptHistory]);
 
-    const langCode = languageToCodeMap[language] || 'en-IN';
+    const langCode = languageToCodeMap[language] || 'en-US';
 
+    // Use the robust hook
     const { 
         isListening, 
-        transcript: newTranscriptChunk, 
-        error: speechError, 
+        transcript: finalTranscriptChunk, 
+        interimTranscript,
         startListening, 
-        stopListening 
+        stopListening,
+        resetTranscript,
+        error: speechError
     } = useSpeechRecognition({ lang: langCode });
 
     useEffect(() => {
@@ -110,55 +117,103 @@ export const ScribeSessionView: React.FC<ScribeSessionViewProps> = ({ onEndSessi
         }
     }, [doctorProfile, language, langCode, isListening, startListening, stopListening]);
 
-    useEffect(() => {
-        if (!newTranscriptChunk) return;
 
-        const processTranscriptChunk = async (chunk: string) => {
-            setError(null);
+    // ----------------------------------------------------------------------
+    // BUFFERING & DIARIZATION LOGIC
+    // ----------------------------------------------------------------------
+
+    const processBuffer = useCallback(async (textToProcess: string) => {
+        if (!textToProcess.trim()) return;
+        
+        // Simple Wake Word detection
+        if (textToProcess.toLowerCase().includes('veda')) {
+            setTranscriptBuffer('');
+            await handleWakeWord(textToProcess);
+            return;
+        }
+
+        setIsDiarizing(true);
+        try {
+            // Contextual history is critical for the AI to determine speaker flow (Question -> Answer)
+            const historyContext = transcriptHistoryRef.current.slice(-6).map(t => `${t.speaker}: ${t.text}`).join('\n');
             
-            const lowerChunk = chunk.toLowerCase();
-            if (lowerChunk.includes('veda')) {
-                await handleWakeWord(chunk);
-                return;
+            const diarizedChunks = await diarizeTranscriptChunk(textToProcess, historyContext, language, doctorProfile);
+            
+            if (diarizedChunks && diarizedChunks.length > 0) {
+                const newEntries: TranscriptEntry[] = diarizedChunks.map((c, i) => ({
+                    id: `entry-${Date.now()}-${i}`,
+                    speaker: c.speaker,
+                    text: c.text,
+                    isProcessing: false,
+                }));
+                setTranscriptHistory(prev => [...prev, ...newEntries]);
+            } else {
+                 // Fallback if diarization fails
+                 setTranscriptHistory(prev => [...prev, {
+                     id: `entry-${Date.now()}`,
+                     speaker: 'Patient', 
+                     text: textToProcess,
+                     isProcessing: false
+                 }]);
             }
+        } catch (e) {
+             console.error("Diarization error:", e);
+             setTranscriptHistory(prev => [...prev, {
+                id: `entry-${Date.now()}`,
+                speaker: 'Patient', 
+                text: textToProcess,
+                isProcessing: false
+            }]);
+        } finally {
+            setIsDiarizing(false);
+        }
+    }, [language, doctorProfile, handleWakeWord]);
 
-            setIsDiarizing(true);
-            try {
-                const history = transcriptHistoryRef.current.slice(-5).map(t => `${t.speaker}: ${t.text}`).join('\n');
-                const diarizedChunks = await diarizeTranscriptChunk(chunk, history, language);
-                
-                if (diarizedChunks) {
-                    const newEntries: TranscriptEntry[] = diarizedChunks.map((c, i) => ({
-                        id: `entry-${Date.now()}-${i}`,
-                        speaker: c.speaker,
-                        text: c.text,
-                        isProcessing: false,
-                    }));
-                    setTranscriptHistory(prev => [...prev, ...newEntries]);
-                } else {
-                     setError("Diarization failed. Could not analyze the conversation chunk.");
-                }
-            } catch (e: any) {
-                 console.error("Diarization error:", e);
-                 setError("Diarization failed. There was an issue analyzing the conversation.");
-            } finally {
-                setIsDiarizing(false);
+    // Accumulate finalized chunks
+    useEffect(() => {
+        if (finalTranscriptChunk) {
+            setTranscriptBuffer(prev => (prev + ' ' + finalTranscriptChunk).trim());
+            resetTranscript();
+        }
+    }, [finalTranscriptChunk, resetTranscript]);
+
+    // Debounce processing:
+    // Wait for 2 seconds of silence to let a full sentence/thought form before diarizing.
+    // This improves accuracy as the AI sees the full grammar (Question vs Statement).
+    useEffect(() => {
+        if (processingTimeoutRef.current) clearTimeout(processingTimeoutRef.current);
+
+        if (transcriptBuffer.length > 0) {
+            // Force flush if buffer gets too long (prevent massive lag)
+            if (transcriptBuffer.length > 250) {
+                const text = transcriptBuffer;
+                setTranscriptBuffer('');
+                processBuffer(text);
+            } else {
+                processingTimeoutRef.current = setTimeout(() => {
+                    const text = transcriptBuffer;
+                    setTranscriptBuffer(''); 
+                    processBuffer(text);
+                }, 2000); // 2s delay for better context
             }
-        };
-
-        processTranscriptChunk(newTranscriptChunk);
-
-    }, [newTranscriptChunk, handleWakeWord, language]);
+        }
+    }, [transcriptBuffer, processBuffer]);
 
 
+    // ----------------------------------------------------------------------
+    
     const handleToggleScribing = useCallback(() => {
         if (isListening) {
             stopListening();
+            if (transcriptBuffer) {
+                 processBuffer(transcriptBuffer);
+                 setTranscriptBuffer('');
+            }
         } else {
             setError(null);
             startListening();
         }
-    }, [isListening, startListening, stopListening]);
+    }, [isListening, startListening, stopListening, transcriptBuffer, processBuffer]);
 
     const handleEndSession = () => {
         if(window.confirm("Are you sure you want to end the session? The transcript and generated note will be permanently deleted.")) {
@@ -202,16 +257,14 @@ export const ScribeSessionView: React.FC<ScribeSessionViewProps> = ({ onEndSessi
             if (insightTimeoutRef.current) clearTimeout(insightTimeoutRef.current);
             insightTimeoutRef.current = setTimeout(() => {
                 fetchInsights();
-            }, 2500);
+            }, 3000);
         }
     }, [transcriptHistory, fetchInsights, isDiarizing]);
 
     useEffect(() => {
         transcriptEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-    }, [transcriptHistory]);
+    }, [transcriptHistory, interimTranscript, transcriptBuffer]);
 
-    
-    // Ensure recording stops on component unmount
     useEffect(() => {
         return () => {
            stopListening();
@@ -224,12 +277,31 @@ export const ScribeSessionView: React.FC<ScribeSessionViewProps> = ({ onEndSessi
              return (
                 <div className="flex items-center gap-2 text-yellow-400 italic">
                     <div className="w-4 h-4 border-2 border-t-transparent border-yellow-400 rounded-full animate-spin"></div>
-                    Analyzing conversation...
+                    Analyzing context & speakers...
                 </div>
             );
         }
-        if (isListening) return <p className="text-gray-400 italic">Listening...</p>;
-        return <p className="text-gray-500">Click the microphone to start transcribing</p>;
+        if (isListening) return <p className="text-green-400 italic">Listening (Active)...</p>;
+        return <p className="text-gray-500">Click microphone to start</p>;
+    }
+    
+    // STYLING LOGIC: Red for Questions, Green for DDx
+    const getCategoryStyle = (category: string) => {
+        switch(category) {
+            case 'Questions to Ask': return 'border-red-500/30 bg-red-900/10 text-red-400';
+            case 'Differential Diagnosis': return 'border-green-500/30 bg-green-900/10 text-green-400';
+            case 'Labs to Consider': return 'border-blue-500/30 bg-blue-900/10 text-blue-300';
+            default: return 'border-aivana-light-grey bg-aivana-grey text-gray-300';
+        }
+    }
+    
+    const getCategoryTitleColor = (category: string) => {
+         switch(category) {
+            case 'Questions to Ask': return 'text-red-400';
+            case 'Differential Diagnosis': return 'text-green-400';
+            case 'Labs to Consider': return 'text-blue-300';
+            default: return 'text-aivana-accent';
+        }
     }
 
     if (!consentGiven) {
@@ -276,7 +348,27 @@ export const ScribeSessionView: React.FC<ScribeSessionViewProps> = ({ onEndSessi
                                     </div>
                                 </div>
                             ))}
-                             {transcriptHistory.length === 0 && !isListening && (
+                            
+                            {/* Buffered/Processing Text */}
+                            {transcriptBuffer && !isDiarizing && (
+                                 <div className="flex flex-col items-center opacity-80">
+                                     <div className="px-4 py-2 rounded-lg max-w-xl bg-gray-700/30 text-gray-300 text-sm italic border border-gray-700 border-dashed">
+                                        ... {transcriptBuffer} ...
+                                     </div>
+                                </div>
+                            )}
+
+                            {/* Interim Result Bubble (Ghost Text) */}
+                            {isListening && interimTranscript && (
+                                <div className="flex flex-col items-center opacity-60">
+                                     <div className="text-xs mb-1 font-semibold text-gray-500">Hearing...</div>
+                                     <div className="px-4 py-2 rounded-lg max-w-xl bg-transparent border border-gray-700 text-gray-400 italic">
+                                        {interimTranscript}
+                                     </div>
+                                </div>
+                            )}
+
+                             {transcriptHistory.length === 0 && !interimTranscript && !isListening && (
                                 <div className="flex-1 flex flex-col items-center justify-center text-center text-gray-500 h-full">
                                     <Icon name="microphone" className="w-8 h-8 mb-2" />
                                     <p>Start the session to begin transcription.</p>
@@ -285,36 +377,60 @@ export const ScribeSessionView: React.FC<ScribeSessionViewProps> = ({ onEndSessi
                             <div ref={transcriptEndRef} />
                         </div>
                     </div>
-                    {/* Note Panel */}
-                    <div className="flex-1 flex flex-col p-4 border-t border-aivana-light-grey overflow-hidden">
-                         <div className="flex justify-between items-center mb-2 flex-shrink-0">
-                            <h2 className="text-lg font-semibold">Draft Clinical Note (SOAP)</h2>
+                    
+                    {/* Redesigned Note Panel - Document Style */}
+                    <div className="flex-1 flex flex-col p-4 md:p-6 border-t md:border-t-0 md:border-l border-aivana-light-grey overflow-hidden bg-[#0a0a0a]">
+                         <div className="flex justify-between items-center mb-3 flex-shrink-0">
+                             <div className="flex items-center gap-2">
+                                <div className="p-1.5 bg-aivana-accent/10 rounded-md">
+                                    <Icon name="document-text" className="w-5 h-5 text-aivana-accent" />
+                                </div>
+                                <h2 className="text-lg font-bold text-white">Draft Clinical Note</h2>
+                             </div>
                             <div className="flex items-center gap-2">
                                 {clinicalNote && !isGeneratingNote && (
-                                    <button onClick={handleCopyNote} className="px-3 py-1.5 text-xs font-semibold bg-aivana-grey hover:bg-aivana-light-grey rounded-lg transition-colors">
-                                        Copy Note
+                                    <button onClick={handleCopyNote} className="px-3 py-1.5 text-xs font-semibold bg-[#2a2a2a] hover:bg-[#3a3a3a] text-white rounded-lg transition-colors border border-[#444]">
+                                        Copy
                                     </button>
                                 )}
-                                <button onClick={handleGenerateNote} disabled={isGeneratingNote || transcriptHistory.length === 0} className="px-3 py-1.5 text-xs font-semibold bg-aivana-accent hover:bg-purple-700 rounded-lg transition-colors disabled:opacity-50">
-                                    {isGeneratingNote ? "Generating..." : clinicalNote ? "Regenerate" : "Generate Note"}
+                                <button onClick={handleGenerateNote} disabled={isGeneratingNote || transcriptHistory.length === 0} className="px-3 py-1.5 text-xs font-semibold bg-aivana-accent hover:bg-purple-700 text-white rounded-lg transition-colors disabled:opacity-50 shadow-lg shadow-purple-900/20">
+                                    {isGeneratingNote ? "Generating..." : clinicalNote ? "Regenerate" : "Generate SOAP Note"}
                                 </button>
                             </div>
                         </div>
-                        <div className="flex-1 bg-aivana-dark-sider/50 rounded-lg p-1 overflow-auto">
-                            {isGeneratingNote && (
-                                <div className="flex items-center justify-center h-full text-gray-400">
-                                    <div className="w-6 h-6 border-2 border-t-transparent border-white rounded-full animate-spin mr-3"></div>
-                                    <span>Composing SOAP note...</span>
+                        
+                        {/* Document Card */}
+                        <div className="flex-1 bg-[#161616] border border-[#333] rounded-xl overflow-hidden flex flex-col shadow-2xl">
+                            {/* Document Toolbar */}
+                            <div className="bg-[#202020] border-b border-[#333] px-4 py-2 flex items-center justify-between text-xs font-mono text-gray-500">
+                                <div className="flex gap-4">
+                                    <span>FORMAT: SOAP</span>
+                                    <span>STATUS: DRAFT</span>
                                 </div>
-                            )}
-                            {!isGeneratingNote && clinicalNote && (
-                                <div className="prose prose-sm prose-invert p-3 max-w-none" dangerouslySetInnerHTML={{ __html: renderMarkdownToHTML(clinicalNote)}}></div>
-                            )}
-                            {!isGeneratingNote && !clinicalNote && (
-                                <div className="flex items-center justify-center h-full text-gray-500 text-center">
-                                    <p>A draft clinical note will appear here after generation.</p>
-                                </div>
-                            )}
+                                <span>{new Date().toLocaleDateString()}</span>
+                            </div>
+
+                            {/* Document Content */}
+                            <div className="flex-1 overflow-y-auto p-6 custom-scrollbar">
+                                {isGeneratingNote && (
+                                    <div className="flex flex-col items-center justify-center h-full text-gray-400 space-y-4">
+                                        <div className="relative w-12 h-12">
+                                            <div className="absolute w-full h-full border-4 border-[#333] rounded-full"></div>
+                                            <div className="absolute w-full h-full border-4 border-t-aivana-accent rounded-full animate-spin"></div>
+                                        </div>
+                                        <span className="animate-pulse">Synthesizing clinical note...</span>
+                                    </div>
+                                )}
+                                {!isGeneratingNote && clinicalNote && (
+                                    <div className="prose prose-sm prose-invert max-w-none" dangerouslySetInnerHTML={{ __html: renderMarkdownToHTML(clinicalNote)}}></div>
+                                )}
+                                {!isGeneratingNote && !clinicalNote && (
+                                    <div className="flex flex-col items-center justify-center h-full text-[#444] text-center space-y-2">
+                                        <Icon name="document-text" className="w-12 h-12 opacity-20" />
+                                        <p>No note generated yet.</p>
+                                    </div>
+                                )}
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -332,14 +448,14 @@ export const ScribeSessionView: React.FC<ScribeSessionViewProps> = ({ onEndSessi
                      {sortedInsights.length === 0 && isListening && (
                         <div className="flex-1 flex flex-col items-center justify-center text-center text-gray-500">
                             <Icon name="spinner" className="w-8 h-8 mb-2 animate-pulse" />
-                            <p>Listening for key information...</p>
+                            <p>Listening for clinical context...</p>
                         </div>
                     )}
                     <div className="space-y-4">
                         {sortedInsights.map((insight, index) => (
-                            <div key={index} className="bg-aivana-grey p-3 rounded-lg animate-fadeInUp" style={{animationDelay: `${index * 100}ms`}}>
-                                <h3 className="font-semibold text-aivana-accent text-sm mb-2">{insight.category}</h3>
-                                <ul className="list-disc list-inside space-y-1 text-sm text-gray-300">
+                            <div key={index} className={`p-3 rounded-lg border animate-fadeInUp ${getCategoryStyle(insight.category)}`} style={{animationDelay: `${index * 100}ms`}}>
+                                <h3 className={`font-bold text-sm mb-2 ${getCategoryTitleColor(insight.category)}`}>{insight.category}</h3>
+                                <ul className="list-disc list-inside space-y-1 text-sm opacity-90">
                                     {insight.points.map((point, pIndex) => (
                                         <li key={pIndex}>{point}</li>
                                     ))}
