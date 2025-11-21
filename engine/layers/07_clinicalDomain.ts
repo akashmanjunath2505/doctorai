@@ -1,4 +1,3 @@
-
 import { NexusContext } from '../types';
 
 // Part of Stratum 3: Hypothesis Forge (Contextual Priors)
@@ -23,7 +22,8 @@ This is a specialized session for: "${context.activeGpt.title}".
            Set "type" to "ddx".
            Field "data": Array of objects with keys "diagnosis", "rationale", "confidence".
            "confidence" MUST be one of: "High", "Medium", "Low".
-           Field "questions": Array of strings (key questions to ask the patient to narrow down the diagnosis).
+           Field "questions": Array of strings (3-5 items) containing relevant follow-up questions for the patient.
+           IMPORTANT: The "summary" field should be a concise narrative. Do NOT list the diagnoses or questions in the summary text, as these are displayed separately.
            `;
        } else if (context.activeGpt.customComponentId === 'LabResultAnalysis') {
             domainInstruction += `
@@ -50,22 +50,19 @@ This is a specialized session for: "${context.activeGpt.title}".
   3. JSON Structure:
   \`\`\`json
   {
-    "summary": "Comprehensive clinical discussion...",
+    "summary": "Comprehensive clinical discussion... (Do NOT list diagnoses/questions here)",
     "type": "ddx",
     "data": [
       { "diagnosis": "Most Likely Condition", "rationale": "Strong evidence...", "confidence": "High" },
       { "diagnosis": "Plausible Condition", "rationale": "Some evidence...", "confidence": "Medium" },
       { "diagnosis": "Less Likely / Rule Out", "rationale": "Low probability but dangerous...", "confidence": "Low" }
     ],
-    "questions": [
-      "Question 1 to narrow down...",
-      "Question 2 about history...",
-      "Question 3 about symptoms..."
-    ]
+    "questions": ["Question 1", "Question 2", "Question 3"]
   }
   \`\`\`
   4. You MUST segment the diagnoses into High, Medium, and Low confidence categories based on the available evidence.
-  5. You MUST provide a list of specific "questions" to ask the patient that would help differentiate between the high-priority diagnoses.
+  5. You MUST provide 3-5 relevant follow-up questions for the patient in the "questions" field.
+  6. Do NOT include the list of diagnoses or questions in the "summary" text, as they will be displayed in a dedicated sidebar.
   `;
 
   context.systemInstruction += domainInstruction;

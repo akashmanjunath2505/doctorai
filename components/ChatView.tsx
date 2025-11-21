@@ -392,6 +392,18 @@ export const ChatView: React.FC<ChatViewProps> = ({
           .find(m => m.sender === 'AI' && m.text && m.text !== '...');
     }, [chat?.messages]);
 
+    const latestDdxData = useMemo(() => {
+        if (!chat?.messages) return null;
+        // Find the last message with structured data of type 'ddx'
+        for (let i = chat.messages.length - 1; i >= 0; i--) {
+            const msg = chat.messages[i];
+            if (msg.structuredData?.type === 'ddx') {
+                return msg.structuredData;
+            }
+        }
+        return null;
+    }, [chat?.messages]);
+
     const handlePlayLastMessage = useCallback(() => {
         if (lastAiMessage) {
             handleToggleTts(lastAiMessage);
@@ -477,6 +489,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
         onClose={() => setIsInsightsPanelOpen(false)}
         insights={insights}
         isLoading={isFetchingInsights}
+        currentDdx={latestDdxData?.type === 'ddx' ? latestDdxData.data : null}
+        currentQuestions={latestDdxData?.type === 'ddx' ? latestDdxData.questions : null}
       />
     </div>
   );

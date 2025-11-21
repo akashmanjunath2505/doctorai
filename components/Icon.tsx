@@ -43,6 +43,7 @@ export const Icon: React.FC<IconProps> = ({ name, className = 'w-5 h-5' }) => {
     download: <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />,
     print: <path strokeLinecap="round" strokeLinejoin="round" d="M6.72 13.829c-.24.03-.48.062-.72.096m.72-.096a8.956 8.956 0 01-2.24 2.163 8.956 8.956 0 01-2.163 2.24m2.163-2.24a8.956 8.956 0 002.24 2.163m0 0A8.956 8.956 0 0012 21a8.956 8.956 0 002.24-2.163m2.24-2.163a8.956 8.956 0 002.163-2.24m-2.163 2.24a8.956 8.956 0 012.163-2.24m0 0l-2.163-2.24m0 0a8.956 8.956 0 01-2.24-2.163m0 0A8.956 8.956 0 0112 3a8.956 8.956 0 012.24 2.163m-2.24 2.163L12 12m0 0l-2.24 2.163" />,
     'document-text': <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />,
+    help: <path strokeLinecap="round" strokeLinejoin="round" d="M9.879 7.519c1.171-1.025 3.071-1.025 4.242 0 1.172 1.025 1.172 2.687 0 3.712-.203.179-.43.326-.67.442-.745.361-1.45.999-1.45 1.827v.75M21 12a9 9 0 11-18 0 9 9 0 0118 0zm-9 5.25h.008v.008H12v-.008z" />,
   };
   const icon = icons[name] || <path />; // Fallback to an empty path
 

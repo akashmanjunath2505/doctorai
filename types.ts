@@ -1,4 +1,3 @@
-
 import type { ReactElement } from 'react';
 
 export enum UserRole {
@@ -76,7 +75,7 @@ export type LabParameterInput = {
 
 
 export type StructuredDataType = 
-  | { type: 'ddx'; data: DdxItem[]; questions?: string[]; summary: string }
+  | { type: 'ddx'; data: DdxItem[]; summary: string; questions?: string[] }
   | { type: 'lab'; data: LabResultAnalysis; summary: string }
   | { type: 'billing'; data: MedicalCodeResult; summary: string }
   | { type: 'handout'; data: PatientHandout; summary: string }
