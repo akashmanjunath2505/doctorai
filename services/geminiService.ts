@@ -28,9 +28,9 @@ export const generateCaseSummary = async (
     .join('\n');
 
   const prompt = `
-    Based on the following conversation history between a user (doctor) and an AI, generate a concise and structured clinical case summary in markdown format.
-    The summary should be suitable for patient records or handover.
-    - Doctor's Profile: ${doctorProfile.qualification}.
+    Based on the following conversation history between a user (clinician) and an AI, generate a concise and structured clinical case summary in markdown format.
+    The summary should be suitable for patient records (EMR) or handover (SBAR format).
+    - Clinician's Profile: ${doctorProfile.qualification}.
     - Language for summary: ${language}.
 
     Conversation:
@@ -64,7 +64,7 @@ export const getPromptInsights = async (
     Your analysis should be based on the doctor's profile: ${doctorProfile.qualification}.
     The response language should be ${language}.
     Analyze the user's prompt and provide:
-    1.  Key clinical terms identified.
+    1.  Key clinical terms identified (Anatomy, Pathology, Pharmacology).
     2.  Suggestions to make the prompt more specific, clear, or comprehensive.
     3.  Potential follow-up questions the doctor might ask.`;
 
@@ -170,9 +170,9 @@ export async function* streamChatResponse(params: {
     knowledgeBaseProtocols,
   } = params;
   
-  // Simplified license check for demo (kept at the entry point)
-  if (message.toLowerCase().includes('mtp') && !isDoctorVerified) {
-    yield { error: 'Accessing some information requires license verification.' };
+  // General license check
+  if ((message.toLowerCase().includes('schedule h') || message.toLowerCase().includes('narcotic')) && !isDoctorVerified) {
+    yield { error: 'Accessing controlled substance information requires license verification.' };
     return;
   }
 
@@ -196,9 +196,10 @@ export const getScribeSpokenResponse = async (
   doctorProfile: DoctorProfile,
   language: string
 ): Promise<string> => {
-  const systemInstruction = `You are Veda, a real-time AI assistant for doctors.
+  const systemInstruction = `You are Veda, a real-time AI assistant for General Practice doctors.
   - The user (a doctor) has just said your wake word "Veda" followed by a question during a patient encounter.
   - Answer the question very concisely and clearly, as if you are speaking.
+  - Focus on general medical, internal medicine, or emergency contexts.
   - Doctor's profile: ${doctorProfile.qualification}.
   - Language: ${language}.`;
 
@@ -226,12 +227,12 @@ export async function* streamScribeInsights(
   doctorProfile: DoctorProfile,
   language: string
 ): AsyncGenerator<{ insights?: ScribeInsightBlock[] }> {
-  const systemInstruction = `You are Veda, an AI assistant providing real-time clinical insights during a patient consultation.
+  const systemInstruction = `You are Veda, an AI assistant providing real-time clinical insights during a general medical consultation.
     - Analyze the following transcript between a Doctor and a Patient.
     - Doctor's profile: ${doctorProfile.qualification}.
     - Language: ${language}.
-    - Generate a list of insights categorized into: 'Differential Diagnosis', 'Questions to Ask', 'Labs to Consider', 'General Note'.
-    - Provide bullet points for each category.
+    - Generate a list of insights categorized into: 'Differential Diagnosis' (General Medicine), 'Questions to Ask' (History taking), 'Labs to Consider' (Diagnostic workup), 'General Note'.
+    - For 'Differential Diagnosis', you MUST format each point starting with the confidence level like this: "High: [Condition Name] - [Rationale]", "Medium: [Condition Name] - [Rationale]", or "Low: [Condition Name] - [Rationale]".
     - Your response MUST be in JSON format.`;
   
   try {
@@ -285,6 +286,7 @@ export const generateClinicalNote = async (
     CONTEXT:
     - Doctor's Profile: ${doctorProfile.qualification}.
     - Language for Note: ${language} (Ensure medical terms are standard).
+    - Setting: General Practice / Internal Medicine.
 
     FORMATTING RULES (Strict Markdown):
     1. Use the following EXACT headings (level 2 Markdown):
@@ -297,10 +299,10 @@ export const generateClinicalNote = async (
     4. Keep it concise but clinically complete.
     
     CONTENT GUIDANCE:
-    - **Subjective**: Chief Complaint (CC), HPI, PMH, ROS. State "Not discussed" if absent.
-    - **Objective**: Vitals, Physical Exam findings, Lab results mentioned. State "Not assessed" if absent.
+    - **Subjective**: Chief Complaint (CC), HPI, PMH, ROS, Medications, Allergies.
+    - **Objective**: Vitals, General Appearance, Systemic Exam (CVS, Resp, Abdo, Neuro, etc.), Labs if available.
     - **Assessment**: Primary diagnosis or differential diagnosis with brief rationale.
-    - **Plan**: Diagnostics ordered, medications prescribed (dose/freq), lifestyle advice, follow-up.
+    - **Plan**: Diagnostics ordered, medications prescribed (dose/freq), referrals, lifestyle advice, follow-up.
 
     DO NOT invent information not present in the transcript.`;
 
@@ -329,34 +331,32 @@ export const diarizeTranscriptChunk = async (
   language: string,
   doctorProfile: DoctorProfile
 ): Promise<{ speaker: 'Doctor' | 'Patient'; text: string }[] | null> => {
-  const systemInstruction = `You are an expert Medical Scribe and Diarization AI.
-    Your GOAL: Accurately identify if the text is spoken by the DOCTOR or the PATIENT.
+  const systemInstruction = `You are an expert Medical Scribe. Your task is to attribute speech to either the "Doctor" or the "Patient".
 
     CONTEXT:
     - Doctor Profile: ${doctorProfile.qualification}.
     - Language: ${language}.
-    - Setting: Clinical Consultation.
+    - The text is a continuous stream from a medical consultation.
 
-    LINGUISTIC PROFILING (Speaker Identification Rules):
+    RULES FOR SPEAKER IDENTIFICATION:
+    1. **Turn-Taking Logic (Context is King)**: 
+       - Look at the "Recent Conversation History".
+       - If the last speaker was Doctor asking a question (e.g., "Does it hurt?"), the new text is extremely likely to be the **Patient** answering (e.g., "Yes").
+       - If the last speaker was Patient describing symptoms, the new text is likely the **Doctor** acknowledging or asking a clarifying question.
     
-    1. **THE DOCTOR**
-       - Asks specific clinical questions ("How long?", "Does it hurt here?", "Any fever?").
-       - Gives commands or instructions ("Take a deep breath", "Lie down", "Open your mouth").
-       - Uses medical terminology to explain or summarize.
-       - Validates symptoms ("Okay", "I see").
+    2. **Linguistic Cues**:
+       - **Doctor**: Uses clinical terminology, asks structured questions (duration, location, severity), gives instructions ("Breathe in"), explains diagnoses, validates ("Okay", "I understand").
+       - **Patient**: Uses layperson terms, describes symptoms/pain subjectively, answers "Yes/No", expresses concern/fear, asks "Is it serious?".
     
-    2. **THE PATIENT**
-       - Describes subjective experiences ("It feels like...", "I have a pain...").
-       - Answers questions directly ("Yes", "No", "Since yesterday").
-       - Expresses concern, fear, or doubt.
-       - Uses layperson language.
+    3. **Split Turns**: 
+       - If the text chunk contains a conversation back-and-forth (e.g., "Does it hurt here? No, lower down."), you MUST SPLIT it into separate entries.
+    
+    INPUT:
+    - History: The last few turns of conversation.
+    - New Chunk: The text segment to attribute.
 
-    INSTRUCTIONS:
-    - Analyze the "New Chunk" in the context of the "History".
-    - If the history ends with a Doctor's question, the new chunk is likely a Patient's answer.
-    - If the text contains dialogue from BOTH (e.g., "Does it hurt?" "Yes"), split it into two entries.
-    - Output a JSON array.
-  `;
+    OUTPUT:
+    - JSON Array of objects: [{ "speaker": "Doctor" | "Patient", "text": "string" }]`;
 
   const prompt = `
     Recent Conversation History:

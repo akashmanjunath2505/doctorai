@@ -30,6 +30,7 @@ export const ScribeSessionView: React.FC<ScribeSessionViewProps> = ({ onEndSessi
     const [error, setError] = useState<string | null>(null);
     const [clinicalNote, setClinicalNote] = useState('');
     const [isGeneratingNote, setIsGeneratingNote] = useState(false);
+    const [isEnding, setIsEnding] = useState(false);
 
     // Buffering logic variables
     const [transcriptBuffer, setTranscriptBuffer] = useState('');
@@ -52,7 +53,7 @@ export const ScribeSessionView: React.FC<ScribeSessionViewProps> = ({ onEndSessi
         transcript: finalTranscriptChunk, 
         interimTranscript,
         startListening, 
-        stopListening,
+        stopListening, 
         resetTranscript,
         error: speechError
     } = useSpeechRecognition({ lang: langCode });
@@ -82,17 +83,13 @@ export const ScribeSessionView: React.FC<ScribeSessionViewProps> = ({ onEndSessi
     }, [doctorProfile, language]);
     
     const handleWakeWord = useCallback(async (text: string) => {
-        const wasListening = isListening;
+        // CRITICAL: We do NOT stop listening here. 
+        // The AI keeps listening (transcribing) even while processing the wake word.
+        // The audio constraints (echoCancellation) prevent the AI from hearing itself.
         setIsVedaSpeaking(true);
-        if (wasListening) {
-            stopListening();
-        }
 
         const resumeSequence = () => {
             setIsVedaSpeaking(false);
-            if (wasListening) {
-                startListening();
-            }
         };
 
         const question = text.toLowerCase().split('veda')[1]?.trim() || "please summarize the conversation so far";
@@ -115,7 +112,7 @@ export const ScribeSessionView: React.FC<ScribeSessionViewProps> = ({ onEndSessi
             console.error("Failed to get audio source from TTS API.");
             resumeSequence();
         }
-    }, [doctorProfile, language, langCode, isListening, startListening, stopListening]);
+    }, [doctorProfile, language, langCode]);
 
 
     // ----------------------------------------------------------------------
@@ -215,12 +212,18 @@ export const ScribeSessionView: React.FC<ScribeSessionViewProps> = ({ onEndSessi
         }
     }, [isListening, startListening, stopListening, transcriptBuffer, processBuffer]);
 
-    const handleEndSession = () => {
-        if(window.confirm("Are you sure you want to end the session? The transcript and generated note will be permanently deleted.")) {
-            stopListening();
-            onEndSession();
+    const handleEndSession = async () => {
+        if (window.confirm("Are you sure you want to end the session? The transcript and generated note will be permanently deleted.")) {
+            setIsEnding(true);
+            try {
+                await stopListening();
+            } catch (err) {
+                console.warn("Error stopping listening on end session:", err);
+            } finally {
+                onEndSession();
+            }
         }
-    }
+    };
 
     const handleGenerateNote = useCallback(async () => {
         const fullTranscript = transcriptHistoryRef.current
@@ -267,12 +270,15 @@ export const ScribeSessionView: React.FC<ScribeSessionViewProps> = ({ onEndSessi
 
     useEffect(() => {
         return () => {
-           stopListening();
+           // Ensure we stop listening when unmounting
+           if (isListening) {
+               stopListening();
+           }
         }
-    }, [stopListening]);
+    }, [isListening, stopListening]);
 
     const getStatusText = () => {
-        if (isVedaSpeaking) return <p className="text-purple-400 italic animate-pulse">Veda is speaking...</p>;
+        if (isVedaSpeaking) return <p className="text-purple-400 italic animate-pulse">Veda is speaking (Listening active)...</p>;
         if (isDiarizing) {
              return (
                 <div className="flex items-center gap-2 text-yellow-400 italic">
@@ -322,24 +328,35 @@ export const ScribeSessionView: React.FC<ScribeSessionViewProps> = ({ onEndSessi
         <div className="flex flex-col h-full w-full bg-aivana-dark animate-fadeInUp">
             <audio ref={audioRef} hidden />
             {/* Header */}
-            <header className="flex items-center justify-between p-4 border-b border-aivana-light-grey flex-shrink-0">
+            <header className="flex items-center justify-between p-4 border-b border-aivana-light-grey flex-shrink-0 bg-aivana-dark z-10">
                 <div className="flex items-center gap-3">
                     <Icon name="waveform" className="w-6 h-6 text-aivana-accent" />
                     <h1 className="text-xl font-bold text-white">Ambient Scribe Session</h1>
                 </div>
-                <button onClick={handleEndSession} className="px-4 py-2 text-sm font-semibold bg-red-600/80 hover:bg-red-600 rounded-lg transition-colors">
-                    End Session
+                <button 
+                    onClick={handleEndSession} 
+                    disabled={isEnding}
+                    className="px-4 py-2 text-sm font-semibold bg-red-600/80 hover:bg-red-600 rounded-lg transition-colors disabled:opacity-50 flex items-center gap-2"
+                >
+                    {isEnding ? (
+                         <>
+                             <div className="w-4 h-4 border-2 border-t-transparent border-white rounded-full animate-spin"></div>
+                             Ending...
+                         </>
+                    ) : (
+                        'End Session'
+                    )}
                 </button>
             </header>
 
             {/* Body */}
-            <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
+            <div className="flex-1 flex flex-col md:flex-row overflow-hidden relative">
                 {/* Left Panel: Transcript & Note */}
                 <div className="flex-1 md:w-2/3 flex flex-col overflow-hidden">
                     {/* Transcript Panel */}
                     <div className="flex-1 flex flex-col p-4 overflow-hidden">
                         <h2 className="text-lg font-semibold mb-2">Live Transcript</h2>
-                        <div className="flex-1 bg-aivana-dark-sider/50 rounded-lg p-3 overflow-y-auto space-y-4 pr-2">
+                        <div className="flex-1 bg-aivana-dark-sider/50 rounded-lg p-3 overflow-y-auto space-y-4 pr-2 custom-scrollbar">
                             {transcriptHistory.map(entry => (
                                 <div key={entry.id} className={`flex flex-col ${entry.speaker === 'Doctor' ? 'items-start' : 'items-end'}`}>
                                     <div className={`text-xs mb-1 font-semibold ${entry.speaker === 'Doctor' ? 'text-aivana-accent' : 'text-blue-400'}`}>{entry.speaker}</div>
@@ -455,25 +472,73 @@ export const ScribeSessionView: React.FC<ScribeSessionViewProps> = ({ onEndSessi
                         {sortedInsights.map((insight, index) => (
                             <div key={index} className={`p-3 rounded-lg border animate-fadeInUp ${getCategoryStyle(insight.category)}`} style={{animationDelay: `${index * 100}ms`}}>
                                 <h3 className={`font-bold text-sm mb-2 ${getCategoryTitleColor(insight.category)}`}>{insight.category}</h3>
-                                <ul className="list-disc list-inside space-y-1 text-sm opacity-90">
-                                    {insight.points.map((point, pIndex) => (
-                                        <li key={pIndex}>{point}</li>
-                                    ))}
-                                </ul>
+                                
+                                {/* Custom Rendering for Differential Diagnosis */}
+                                {insight.category === 'Differential Diagnosis' ? (
+                                    <div className="space-y-3">
+                                        {['High', 'Medium', 'Low'].map(level => {
+                                            // Regex match for "High: Diagnosis - Rationale"
+                                            const points = insight.points.filter(p => p.startsWith(`${level}:`));
+                                            if (points.length === 0) return null;
+                                            const color = level === 'High' ? 'text-green-400' : level === 'Medium' ? 'text-yellow-400' : 'text-blue-400';
+                                            const bg = level === 'High' ? 'bg-green-900/20' : level === 'Medium' ? 'bg-yellow-900/20' : 'bg-blue-900/20';
+                                            
+                                            return (
+                                                <div key={level}>
+                                                    <div className={`text-[10px] uppercase font-bold mb-1 ${color} opacity-80 pl-1`}>{level} Probability</div>
+                                                    <ul className="space-y-1">
+                                                        {points.map((p, i) => {
+                                                            const match = p.match(/^(High|Medium|Low):\s*(.*?)\s*-\s*(.*)$/);
+                                                            const diagnosis = match ? match[2] : p.split(':')[1]?.trim() || p;
+                                                            const rationale = match ? match[3] : '';
+                                                            
+                                                            return (
+                                                                <li key={i} className={`text-xs p-2 rounded-md ${bg} border border-transparent`}>
+                                                                    <span className="font-semibold text-gray-200 block mb-0.5">
+                                                                        {diagnosis}
+                                                                    </span>
+                                                                    {rationale && (
+                                                                        <span className="text-gray-400 block leading-tight">
+                                                                            {rationale}
+                                                                        </span>
+                                                                    )}
+                                                                </li>
+                                                            );
+                                                        })}
+                                                    </ul>
+                                                </div>
+                                            )
+                                        })}
+                                        {/* Fallback for unformatted points */}
+                                        {insight.points.filter(p => !p.match(/^(High|Medium|Low):/)).length > 0 && (
+                                            <ul className="list-disc list-inside space-y-1 text-sm opacity-90">
+                                                {insight.points.filter(p => !p.match(/^(High|Medium|Low):/)).map((point, pIndex) => (
+                                                    <li key={pIndex}>{point}</li>
+                                                ))}
+                                            </ul>
+                                        )}
+                                    </div>
+                                ) : (
+                                    <ul className="list-disc list-inside space-y-1 text-sm opacity-90">
+                                        {insight.points.map((point, pIndex) => (
+                                            <li key={pIndex}>{point}</li>
+                                        ))}
+                                    </ul>
+                                )}
                             </div>
                         ))}
                     </div>
                 </aside>
             </div>
              {/* Footer / Controls */}
-            <footer className="flex flex-col p-4 border-t border-aivana-light-grey items-center justify-center flex-shrink-0">
+            <footer className="flex flex-col p-4 border-t border-aivana-light-grey items-center justify-center flex-shrink-0 bg-aivana-dark z-10">
                 {error && <div className="text-red-400 p-2 text-center bg-red-900/50 rounded-md text-sm mb-2 max-w-xl">{error}</div>}
                  <div className="h-8 mb-2 flex items-center justify-center text-sm text-center">
                     {getStatusText()}
                 </div>
                 <button
                     onClick={handleToggleScribing}
-                    disabled={isVedaSpeaking}
+                    disabled={isEnding}
                     className="relative w-20 h-20 rounded-full bg-aivana-accent flex items-center justify-center text-white transition-all duration-300 ease-in-out focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-aivana-dark focus:ring-purple-400 disabled:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed"
                     aria-label={isListening ? 'Stop Transcribing' : 'Start Transcribing'}
                 >

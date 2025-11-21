@@ -36,7 +36,7 @@ const DoctorProfileSwitcher: React.FC<{
     return (
         <div>
             <label className="block text-xs font-medium text-gray-500 mb-2">
-                Doctor Profile (Simulated)
+                Clinician Profile
             </label>
             <div className="flex bg-aivana-grey rounded-lg p-1 gap-1">
                  {profiles.map(p => (
@@ -101,7 +101,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     const url = URL.createObjectURL(dataBlob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = 'mtp_protocol_and_tests.json';
+    link.download = 'general_sepsis_protocol.json';
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -112,7 +112,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   // Reorder GPTs to prioritize the ones from the screenshot design for the Explore list
   const displayedGpts = useMemo(() => {
-      const priorityIds = ['doctor-ddx', 'doctor-handout', 'doctor-lab'];
+      const priorityIds = ['doctor-ddx', 'doctor-emergency', 'doctor-lab'];
       const priority = gpts.filter(g => priorityIds.includes(g.id));
       const others = gpts.filter(g => !priorityIds.includes(g.id));
       return [...priority, ...others];
@@ -186,10 +186,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
                             }`}
                         >
                             <div className="text-gray-500 group-hover:text-white transition-colors">
-                                <Icon name={gpt.icon.props.name} className="w-4 h-4" />
+                                {React.cloneElement(gpt.icon as React.ReactElement<any>, { className: 'w-4 h-4' })}
                             </div>
                             <span className="text-sm truncate">
-                                {gpt.id === 'doctor-ddx' ? 'Differential Diagnosis' : gpt.title}
+                                {gpt.id === 'doctor-ddx' ? 'General DDx' : gpt.title}
                             </span>
                         </button>
                     ))}
@@ -213,6 +213,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     >
                         <Icon name="print" className="w-4 h-4"/>
                         <span className="text-sm">Print Cards</span>
+                    </button>
+                     <button
+                        onClick={handleDownloadMtpJson}
+                        className="w-full text-left flex items-center gap-3 px-3 py-2 rounded-lg transition-colors text-gray-400 hover:text-white hover:bg-gray-800"
+                    >
+                        <Icon name="download" className="w-4 h-4"/>
+                        <span className="text-sm">Download Protocol JSON</span>
                     </button>
                  </div>
             </div>

@@ -146,7 +146,7 @@ const App: React.FC = () => {
                         <Icon name="menu" />
                       </button>
                       <h2 className="text-lg font-semibold truncate px-2">
-                        {activeChat?.title || 'Aivana AI for Doctors'}
+                        {activeChat?.title || 'Aivana General Medicine'}
                       </h2>
                        <div className="w-9 h-9">
                         {activeChat && (

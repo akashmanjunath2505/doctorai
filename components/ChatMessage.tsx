@@ -1,3 +1,4 @@
+
 import React, { useState } from 'react';
 import { Message, DdxItem, LabResultAnalysis, MedicalCodeResult, PatientHandout, LabParameter, RiskAssessmentResult } from '../types';
 import { Icon } from './Icon';
@@ -37,26 +38,115 @@ const Citations: React.FC<{ citations: NonNullable<Message['citations']> }> = ({
 
 // --- Structured Data Renderers ---
 
-const RenderDdx: React.FC<{ items: DdxItem[] }> = ({ items }) => (
-    <div className="mt-4 pt-3 border-t border-aivana-light-grey/80">
-        <h4 className="text-sm font-semibold text-gray-200 mb-3">Differential Diagnosis</h4>
-        <div className="space-y-3">
-            {items.map((item, index) => (
-                <div key={index} className="p-3 bg-aivana-grey/50 rounded-lg">
-                    <div className="flex items-center justify-between">
-                        <h5 className="font-semibold text-white">{item.diagnosis}</h5>
-                        <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${
-                            item.confidence === 'High' ? 'bg-green-500/20 text-green-300' :
-                            item.confidence === 'Medium' ? 'bg-yellow-500/20 text-yellow-300' :
-                            'bg-red-500/20 text-red-300'
-                        }`}>{item.confidence}</span>
-                    </div>
-                    <p className="text-xs text-gray-300 mt-1">{item.rationale}</p>
+const RenderDdx: React.FC<{ items: DdxItem[]; questions?: string[] }> = ({ items, questions }) => {
+    const [isQuestionsOpen, setIsQuestionsOpen] = useState(false);
+
+    // Helper to normalize confidence strings (e.g. "High Probability" -> "High")
+    const normalizeConfidence = (c: string) => {
+        const lower = (c || '').toLowerCase();
+        if (lower.includes('high')) return 'High';
+        if (lower.includes('medium')) return 'Medium';
+        if (lower.includes('low')) return 'Low';
+        return 'Low'; // default fallback
+    };
+
+    const groupedItems = {
+        High: items.filter(i => normalizeConfidence(i.confidence) === 'High'),
+        Medium: items.filter(i => normalizeConfidence(i.confidence) === 'Medium'),
+        Low: items.filter(i => normalizeConfidence(i.confidence) === 'Low')
+    };
+
+    const renderSection = (level: 'High' | 'Medium' | 'Low') => {
+        const groupItems = groupedItems[level];
+        if (!groupItems || groupItems.length === 0) return null;
+
+        let headerStyle = '';
+        let badgeStyle = '';
+        
+        if (level === 'High') {
+            headerStyle = 'text-green-400';
+            badgeStyle = 'bg-green-900/50 text-green-400 border-green-500/30';
+        } else if (level === 'Medium') {
+            headerStyle = 'text-yellow-400';
+            badgeStyle = 'bg-yellow-900/50 text-yellow-400 border-yellow-500/30';
+        } else {
+            headerStyle = 'text-blue-400';
+            badgeStyle = 'bg-blue-900/50 text-blue-400 border-blue-500/30';
+        }
+
+        return (
+            <div className="mb-6 last:mb-0">
+                 <h5 className={`text-xs font-bold uppercase tracking-wider mb-2 pl-1 flex items-center gap-2 ${headerStyle}`}>
+                    <div className={`w-2 h-2 rounded-full ${level === 'High' ? 'bg-green-500' : level === 'Medium' ? 'bg-yellow-500' : 'bg-blue-500'}`}></div>
+                    {level} Probability
+                </h5>
+                <div className="space-y-3">
+                    {groupItems.map((item, index) => (
+                        <div key={index} className="p-4 bg-[#1c1c1c] rounded-xl border border-[#333] hover:border-[#444] transition-colors shadow-sm">
+                            <div className="flex items-start justify-between gap-3 mb-2">
+                                <h6 className="font-bold text-gray-100 text-base">{item.diagnosis}</h6>
+                                <span className={`text-[10px] uppercase font-bold px-2 py-1 rounded-md border ${badgeStyle}`}>
+                                    {item.confidence}
+                                </span>
+                            </div>
+                            <p className="text-sm text-gray-400 leading-relaxed">{item.rationale}</p>
+                        </div>
+                    ))}
                 </div>
-            ))}
+            </div>
+        );
+    };
+
+    return (
+        <div className="mt-6 pt-4 border-t border-gray-800 w-full">
+            <h4 className="text-sm font-bold text-gray-200 mb-5 flex items-center gap-2">
+                <div className="p-1.5 bg-aivana-accent/20 rounded-md">
+                    <Icon name="diagnosis" className="w-4 h-4 text-aivana-accent" />
+                </div>
+                Differential Diagnosis
+            </h4>
+            <div className="space-y-2">
+                 {renderSection('High')}
+                 {renderSection('Medium')}
+                 {renderSection('Low')}
+            </div>
+
+             {/* Questions to Ask Dropdown */}
+            {questions && questions.length > 0 && (
+                <div className="mt-6 pt-2">
+                    <button 
+                        onClick={() => setIsQuestionsOpen(!isQuestionsOpen)}
+                        className="flex items-center justify-between w-full px-4 py-3 bg-[#1c1c1c] hover:bg-[#2a2a2a] rounded-xl border border-[#333] transition-all text-left group"
+                    >
+                        <div className="flex items-center gap-3">
+                            <div className="p-1.5 bg-aivana-accent/20 rounded-md text-aivana-accent group-hover:bg-aivana-accent group-hover:text-white transition-colors">
+                                <Icon name="clipboardCheck" className="w-4 h-4" /> 
+                            </div>
+                            <span className="font-semibold text-gray-200 text-sm">Questions to Ask Patient</span>
+                        </div>
+                        <Icon 
+                            name="chevronDown" 
+                            className={`w-4 h-4 text-gray-500 transition-transform duration-200 ${isQuestionsOpen ? 'rotate-180' : ''}`} 
+                        />
+                    </button>
+
+                    {isQuestionsOpen && (
+                        <div className="mt-3 pl-2 animate-fadeInUp">
+                            <ul className="space-y-2">
+                                {questions.map((q, idx) => (
+                                    <li key={idx} className="flex items-start gap-3 p-3 rounded-lg bg-aivana-dark/50 border border-gray-800 text-sm text-gray-300">
+                                        <span className="text-aivana-accent font-bold select-none">•</span>
+                                        <span>{q}</span>
+                                    </li>
+                                ))}
+                            </ul>
+                        </div>
+                    )}
+                </div>
+            )}
         </div>
-    </div>
-);
+    );
+};
 
 const RenderLabAnalysis: React.FC<{ analysis: LabResultAnalysis }> = ({ analysis }) => {
     const getUrgencyClass = (urgency: LabParameter['urgency']) => {
@@ -133,7 +223,7 @@ const RenderRiskAssessment: React.FC<{ assessment: RiskAssessmentResult }> = ({ 
 
     return (
         <div className="mt-4 pt-3 border-t border-aivana-light-grey/80">
-            <h4 className="text-sm font-semibold text-gray-200 mb-3">Pregnancy Risk Assessment Result</h4>
+            <h4 className="text-sm font-semibold text-gray-200 mb-3">Risk Assessment Result</h4>
             <div className={`p-3 rounded-lg border-l-4 ${getRiskLevelClass(assessment.riskLevel)}`}>
                 <p className="text-xs font-medium uppercase tracking-wider">Risk Level</p>
                 <p className="text-2xl font-bold text-white">{assessment.riskLevel}</p>
@@ -166,7 +256,7 @@ const StructuredContent: React.FC<{ message: Message }> = ({ message }) => {
 
     switch (message.structuredData.type) {
         case 'ddx':
-            return <RenderDdx items={message.structuredData.data} />;
+            return <RenderDdx items={message.structuredData.data} questions={message.structuredData.questions} />;
         case 'lab':
             return <RenderLabAnalysis analysis={message.structuredData.data} />;
         case 'billing':

@@ -1,6 +1,8 @@
 
 export const renderMarkdownToHTML = (text: string): string => {
     // 1. Header Processing with SOAP specific colors and icons
+    // We replace specific headers like ## Subjective with custom styled HTML.
+    
     let processedText = text
         // Subjective - Blue
         .replace(/^##\s*Subjective/gim, 

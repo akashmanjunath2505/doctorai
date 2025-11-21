@@ -52,6 +52,7 @@ export const useSpeechRecognition = (options: { lang?: string } = {}): UseSpeech
   
   const supported = true;
 
+  // Refs for state management to avoid stale closures in callbacks
   const audioContextRef = useRef<AudioContext | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
@@ -59,6 +60,10 @@ export const useSpeechRecognition = (options: { lang?: string } = {}): UseSpeech
   const wsRef = useRef<any>(null);
   const currentTurnTextRef = useRef('');
   const isCleaningUpRef = useRef(false);
+  
+  // Track intended state to handle auto-reconnects
+  const shouldBeListeningRef = useRef(false);
+  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Initialize AI client safely
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
@@ -101,7 +106,17 @@ export const useSpeechRecognition = (options: { lang?: string } = {}): UseSpeech
         }
 
         // 4. Reset Session
-        wsRef.current = null;
+        if (wsRef.current) {
+            try {
+                // Attempt to close the session properly
+                if (typeof wsRef.current.close === 'function') {
+                     wsRef.current.close();
+                }
+            } catch (e) {
+                console.warn("Error closing Gemini Live session:", e);
+            }
+            wsRef.current = null;
+        }
         
         // 5. Flush pending text
         if (currentTurnTextRef.current) {
@@ -114,17 +129,17 @@ export const useSpeechRecognition = (options: { lang?: string } = {}): UseSpeech
         console.error("Error during cleanup:", error);
     } finally {
         isCleaningUpRef.current = false;
+        // Only update state if we are intentionally stopping, otherwise leave it for reconnect
+        if (!shouldBeListeningRef.current) {
+            setIsListening(false);
+        }
     }
   }, []);
 
-  const stopListening = useCallback(async () => {
-    if (!isListening) return;
-    setIsListening(false);
-    await cleanup();
-  }, [isListening, cleanup]);
-
   const startListening = useCallback(async () => {
-    if (isListening || isCleaningUpRef.current) return;
+    if (isCleaningUpRef.current) return;
+    
+    shouldBeListeningRef.current = true;
     setError(null);
 
     try {
@@ -134,14 +149,12 @@ export const useSpeechRecognition = (options: { lang?: string } = {}): UseSpeech
         audioContextRef.current = audioContext;
 
         // 2. Connect to Gemini Live
-        // IMPORTANT: inputAudioTranscription is an empty object to enable it with default settings.
-        // We strictly define the config to avoid 'Invalid Argument' errors.
         const config = {
             responseModalities: ['AUDIO'], 
             speechConfig: {
                 voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } }
             },
-            inputAudioTranscription: {},
+            inputAudioTranscription: {}, // Enable transcription
             systemInstruction: "You are a passive listener. Do not speak. Listen to the input audio and transcribe it internally.",
         };
 
@@ -176,15 +189,28 @@ export const useSpeechRecognition = (options: { lang?: string } = {}): UseSpeech
                 },
                 onclose: () => {
                     console.log("Gemini Live Session Closed");
-                    setIsListening(false);
+                    // Auto-reconnect logic
+                    if (shouldBeListeningRef.current) {
+                        console.log("Attempting to reconnect...");
+                        cleanup().then(() => {
+                            reconnectTimeoutRef.current = setTimeout(() => {
+                                startListening();
+                            }, 1000);
+                        });
+                    } else {
+                        setIsListening(false);
+                    }
                 },
                 onerror: (err: any) => {
                     console.error("Gemini Live Session Error:", err);
-                    // Suppress harmless connection errors during teardown
-                    if (isListening) {
-                        setError("Connection interrupted. Please restart.");
-                        cleanup();
-                        setIsListening(false);
+                    // If it's an error but we want to be listening, treat as a close/reconnect
+                    if (shouldBeListeningRef.current) {
+                        // Don't set global error if we are just going to retry
+                        console.warn("Connection error, will retry.");
+                    } else {
+                         setError("Connection interrupted.");
+                         cleanup();
+                         setIsListening(false);
                     }
                 }
             }
@@ -194,8 +220,14 @@ export const useSpeechRecognition = (options: { lang?: string } = {}): UseSpeech
         const session = await sessionPromise;
         wsRef.current = session;
 
-        // 3. Start Microphone Stream
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        // 3. Start Microphone Stream with Echo Cancellation
+        const stream = await navigator.mediaDevices.getUserMedia({ 
+            audio: {
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true
+            } 
+        });
         streamRef.current = stream;
 
         const source = audioContext.createMediaStreamSource(stream);
@@ -230,10 +262,20 @@ export const useSpeechRecognition = (options: { lang?: string } = {}): UseSpeech
     } catch (err: any) {
         console.error("Failed to start listening:", err);
         setError("Microphone access denied or connection failed.");
+        shouldBeListeningRef.current = false; // Give up if initial connection fails
         cleanup();
         setIsListening(false);
     }
-  }, [isListening, cleanup]);
+  }, [cleanup]);
+
+  const stopListening = useCallback(async () => {
+    shouldBeListeningRef.current = false;
+    if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+    }
+    setIsListening(false);
+    await cleanup();
+  }, [cleanup]);
 
   const resetTranscript = useCallback(() => {
     setTranscript('');
@@ -243,6 +285,7 @@ export const useSpeechRecognition = (options: { lang?: string } = {}): UseSpeech
 
   useEffect(() => {
     return () => {
+        shouldBeListeningRef.current = false;
         cleanup();
     };
   }, [cleanup]);

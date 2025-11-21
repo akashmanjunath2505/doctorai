@@ -1,3 +1,4 @@
+
 import type { ReactElement } from 'react';
 
 export enum UserRole {
@@ -75,7 +76,7 @@ export type LabParameterInput = {
 
 
 export type StructuredDataType = 
-  | { type: 'ddx'; data: DdxItem[]; summary: string }
+  | { type: 'ddx'; data: DdxItem[]; questions?: string[]; summary: string }
   | { type: 'lab'; data: LabResultAnalysis; summary: string }
   | { type: 'billing'; data: MedicalCodeResult; summary: string }
   | { type: 'handout'; data: PatientHandout; summary: string }
@@ -111,7 +112,7 @@ export interface PreCodedGpt {
   // FIX: Changed JSX.Element to ReactElement to avoid a TypeScript error where the JSX namespace is not found in .ts files.
   icon: ReactElement;
   roles: UserRole[];
-  customComponentId?: 'PregnancyRiskAssessment' | 'LabResultAnalysis';
+  customComponentId?: 'PregnancyRiskAssessment' | 'LabResultAnalysis' | 'DifferentialDiagnosis';
 }
 
 // Types for Scribe Session
@@ -204,7 +205,7 @@ export interface ClinicalProtocol {
   title: string;
   metadata: ProtocolMetadata;
   preconditions: string[];
-  settings: ('Primary' | 'Secondary' | 'Tertiary')[];
+  settings: ('Primary' | 'Secondary' | 'Tertiary' | 'Emergency' | 'ICU' | 'Ward' | 'Community')[];
   stepwise_actions: ProtocolStep[];
   dosing_table: DosingInfo[];
   monitoring_template: MonitoringTemplate;

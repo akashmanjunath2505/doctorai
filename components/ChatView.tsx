@@ -7,7 +7,7 @@ import { PRE_CODED_GPTS } from '../constants';
 import { streamChatResponse, getPromptInsights } from '../services/geminiService';
 import { synthesizeSpeech } from '../services/googleTtsService';
 import { PromptInsightsPanel } from './PromptInsightsPanel';
-import { PregnancyRiskAssessmentForm } from './PregnancyRiskAssessmentForm';
+import { GeneralTriageForm } from './PregnancyRiskAssessmentForm'; // Re-using file, but content is GeneralTriage
 
 interface ChatViewProps {
   chat: Chat | null;
@@ -74,24 +74,24 @@ const LabResultForm: React.FC<{ onSubmit: (params: LabParameterInput[]) => void 
             <div className="w-full max-w-3xl bg-aivana-light-grey rounded-xl p-6 md:p-8 border border-aivana-light-grey/50">
                 <div className="flex items-center gap-3 mb-4">
                     <Icon name="lab" className="w-8 h-8 text-aivana-accent" />
-                    <h2 className="text-2xl font-bold text-white">Lab Result Analyzer</h2>
+                    <h2 className="text-2xl font-bold text-white">General Lab Analyzer</h2>
                 </div>
-                <p className="text-gray-400 mb-6 text-sm">Enter one or more lab parameters for a structured, evidence-based analysis.</p>
+                <p className="text-gray-400 mb-6 text-sm">Enter lab parameters (e.g., Sodium, Creatinine, WBC) for a clinical interpretation.</p>
                 
                 <form onSubmit={handleSubmit} className="space-y-4">
                     {/* Parameter Input Fields */}
                     <div className="grid grid-cols-1 md:grid-cols-5 gap-3 items-end p-3 bg-aivana-dark rounded-lg">
                         <div className="md:col-span-2">
                             <label htmlFor="name" className="block text-xs font-medium text-gray-300 mb-1">Parameter Name</label>
-                            <input type="text" name="name" id="name" value={currentParam.name} onChange={handleInputChange} className="w-full bg-aivana-grey p-2 rounded-md border border-aivana-light-grey/80 focus:ring-aivana-accent focus:border-aivana-accent" placeholder="e.g., Hemoglobin" />
+                            <input type="text" name="name" id="name" value={currentParam.name} onChange={handleInputChange} className="w-full bg-aivana-grey p-2 rounded-md border border-aivana-light-grey/80 focus:ring-aivana-accent focus:border-aivana-accent" placeholder="e.g., Sodium" />
                         </div>
                         <div>
                             <label htmlFor="value" className="block text-xs font-medium text-gray-300 mb-1">Value</label>
-                            <input type="text" name="value" id="value" value={currentParam.value} onChange={handleInputChange} className="w-full bg-aivana-grey p-2 rounded-md border border-aivana-light-grey/80 focus:ring-aivana-accent focus:border-aivana-accent" placeholder="e.g., 10.5" />
+                            <input type="text" name="value" id="value" value={currentParam.value} onChange={handleInputChange} className="w-full bg-aivana-grey p-2 rounded-md border border-aivana-light-grey/80 focus:ring-aivana-accent focus:border-aivana-accent" placeholder="e.g., 145" />
                         </div>
                         <div>
                             <label htmlFor="units" className="block text-xs font-medium text-gray-300 mb-1">Units</label>
-                            <input type="text" name="units" id="units" value={currentParam.units} onChange={handleInputChange} className="w-full bg-aivana-grey p-2 rounded-md border border-aivana-light-grey/80 focus:ring-aivana-accent focus:border-aivana-accent" placeholder="e.g., g/dL" />
+                            <input type="text" name="units" id="units" value={currentParam.units} onChange={handleInputChange} className="w-full bg-aivana-grey p-2 rounded-md border border-aivana-light-grey/80 focus:ring-aivana-accent focus:border-aivana-accent" placeholder="e.g., mEq/L" />
                         </div>
                         <button type="button" onClick={handleAddParam} disabled={!canAdd} className="w-full bg-aivana-accent/80 hover:bg-aivana-accent text-white font-semibold py-2 px-3 rounded-md transition-colors flex items-center justify-center gap-2 disabled:bg-aivana-light-grey/50 disabled:cursor-not-allowed">
                             <Icon name="newChat" className="w-5 h-5"/> Add
@@ -114,7 +114,7 @@ const LabResultForm: React.FC<{ onSubmit: (params: LabParameterInput[]) => void 
                     
                     <button type="submit" className="w-full !mt-6 bg-aivana-accent hover:bg-purple-700 text-white font-semibold py-3 px-4 rounded-lg transition-colors flex items-center justify-center gap-2">
                         <Icon name="diagnosis" className="w-5 h-5"/>
-                        Submit for Analysis
+                        Analyze Results
                     </button>
                 </form>
             </div>
@@ -256,7 +256,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
         knowledgeBaseProtocols,
     });
 
-    let finalMessage: Message = { ...aiMessagePlaceholder, text: '' };
+    let finalMessage: Message = { ...aiMessagePlaceholder, text: '...' };
+    let fullStreamedText = '';
 
     try {
         for await (const chunk of stream) {
@@ -274,14 +275,37 @@ export const ChatView: React.FC<ChatViewProps> = ({
             }
 
             if (chunk.textChunk) {
-                finalMessage.text += chunk.textChunk;
+                fullStreamedText += chunk.textChunk;
+                
+                // Check if we should hide this text (JSON buffering logic)
+                const target = '```json';
+                const trimmed = fullStreamedText.trimStart();
+                let shouldHide = false;
+
+                if (trimmed.startsWith(target)) {
+                     // It definitely starts with JSON block. Hide it.
+                     shouldHide = true;
+                } else if (target.startsWith(trimmed) && trimmed.length < target.length) {
+                     // It matches the prefix so far (e.g. "``"), so wait to see if it becomes JSON.
+                     shouldHide = true;
+                }
+                
+                // If it's potentially JSON, keep the UI text as '...' to show typing indicator
+                // Otherwise, update the UI with the streamed text
+                if (shouldHide) {
+                    finalMessage.text = '...';
+                } else {
+                    finalMessage.text = fullStreamedText;
+                }
             }
+
             if (chunk.source_protocol_id) finalMessage.source_protocol_id = chunk.source_protocol_id;
             if (chunk.source_protocol_last_reviewed) finalMessage.source_protocol_last_reviewed = chunk.source_protocol_last_reviewed;
             if (chunk.action_type) finalMessage.action_type = chunk.action_type;
             if (chunk.citations) finalMessage.citations = chunk.citations;
             if (chunk.structuredData) {
                 finalMessage.structuredData = chunk.structuredData;
+                // Once structured data arrives, we replace the text (which might be '...' or JSON) with the summary.
                 finalMessage.text = chunk.structuredData.summary; 
             }
             
@@ -298,21 +322,26 @@ export const ChatView: React.FC<ChatViewProps> = ({
   
   const handleRiskAssessmentSubmit = (formData: {
     age: string;
-    bmi: string;
+    sex: string;
     systolicBP: string;
     diastolicBP: string;
-    glucose: string;
+    hr: string;
+    temp: string;
+    spo2: string;
+    respiratoryRate: string;
+    chiefComplaint: string;
     history: string[];
   }) => {
       const prompt = `
-          Analyze the following patient data for pregnancy risk stratification.
-          - Age: ${formData.age}
-          - BMI: ${formData.bmi}
-          - Blood Pressure: ${formData.systolicBP}/${formData.diastolicBP} mmHg
-          - Fasting Blood Glucose: ${formData.glucose} mg/dL
-          - Medical History: ${formData.history.length > 0 ? formData.history.join(', ') : 'None reported'}
+          Perform a clinical risk assessment and triage for this patient.
+          - Patient: ${formData.age} year old ${formData.sex}
+          - Chief Complaint: ${formData.chiefComplaint}
+          - Vitals: BP ${formData.systolicBP}/${formData.diastolicBP}, HR ${formData.hr}, RR ${formData.respiratoryRate}, Temp ${formData.temp}°C, SpO2 ${formData.spo2}%
+          - PMH: ${formData.history.length > 0 ? formData.history.join(', ') : 'None reported'}
           
-          Based on FOGSI and WHO guidelines, provide a risk level (Low, Medium, High), identify the key contributing risk factors, and suggest a clear, actionable management plan. Your response must be in structured JSON format.
+          Calculate relevant risk scores (e.g., NEWS2, qSOFA, ASCVD, HEART score) based on the presentation.
+          Provide a differential diagnosis, risk stratification (Low/Medium/High), and suggested management plan/disposition.
+          Your response must be in structured JSON format.
       `;
       handleSendMessage(prompt);
   };
@@ -323,10 +352,10 @@ export const ChatView: React.FC<ChatViewProps> = ({
       );
       
       const prompt = `
-          Analyze the following lab results for a pregnant patient.
+          Analyze the following lab results for a general medical patient.
           ${paramStrings.join('\n')}
           
-          Based on FOGSI and WHO guidelines, provide a detailed interpretation for each parameter, an overall summary, and flag any critical or abnormal values with recommended next steps. Your response must be in structured JSON format.
+          Provide a detailed interpretation for each parameter, an overall clinical summary, and flag any critical or abnormal values with recommended next steps. Your response must be in structured JSON format.
       `;
       handleSendMessage(prompt);
   };
@@ -385,7 +414,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
   }
   
   if (shouldShowRiskAssessmentForm) {
-      return <PregnancyRiskAssessmentForm onSubmit={handleRiskAssessmentSubmit} />;
+      return <GeneralTriageForm onSubmit={handleRiskAssessmentSubmit} />;
   }
   
   if (shouldShowLabResultForm) {
@@ -465,10 +494,10 @@ const WelcomeScreen: React.FC<{ onNewChat: (gpt?: PreCodedGpt) => void }> = ({ o
             icon: 'diagnosis',
         },
         {
-            id: 'doctor-handout',
-            title: 'Patient Handout Generator',
-            description: 'Create easy-to-understand patient handouts for various conditions.',
-            icon: 'handout',
+            id: 'doctor-emergency',
+            title: 'Emergency Protocols',
+            description: 'Step-by-step guides for ACLS, Trauma, and Critical Care.',
+            icon: 'siren',
         },
         {
             id: 'doctor-lab',
@@ -490,10 +519,10 @@ const WelcomeScreen: React.FC<{ onNewChat: (gpt?: PreCodedGpt) => void }> = ({ o
             </div>
 
             <h1 className="text-4xl font-bold text-white mb-4">
-                Welcome to Aivana for Doctors
+                Welcome to Aivana General Medicine
             </h1>
             <p className="text-gray-400 mb-12 text-lg max-w-2xl mx-auto leading-relaxed">
-                Your AI partner for clinical excellence. Select a specialized tool or start a general conversation below.
+                Your AI clinical partner for Internal Medicine, Emergency, and General Practice. Select a specialized tool or start a consultation below.
             </p>
 
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6 max-w-6xl w-full">
