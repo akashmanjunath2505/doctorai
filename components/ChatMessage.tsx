@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Message, LabResultAnalysis, MedicalCodeResult, PatientHandout, LabParameter, RiskAssessmentResult } from '../types';
+import { Message, LabResultAnalysis, MedicalCodeResult, PatientHandout, LabParameter, RiskAssessmentResult, DdxItem } from '../types';
 import { Icon } from './Icon';
 import { TypingIndicator } from './TypingIndicator';
 import { renderMarkdownToHTML } from '../utils/markdownRenderer';
@@ -36,6 +36,65 @@ const Citations: React.FC<{ citations: NonNullable<Message['citations']> }> = ({
 };
 
 // --- Structured Data Renderers ---
+
+const RenderDdx: React.FC<{ items: DdxItem[] }> = ({ items }) => {
+    if (!items || items.length === 0) return null;
+
+    const normalizeConfidence = (c: string) => {
+        const lower = (c || '').toLowerCase();
+        if (lower.includes('high')) return 'High';
+        if (lower.includes('medium')) return 'Medium';
+        if (lower.includes('low')) return 'Low';
+        return 'Low'; 
+    };
+
+    const grouped = {
+        High: items.filter(i => normalizeConfidence(i.confidence) === 'High'),
+        Medium: items.filter(i => normalizeConfidence(i.confidence) === 'Medium'),
+        Low: items.filter(i => normalizeConfidence(i.confidence) === 'Low')
+    };
+
+    const renderSection = (title: string, items: DdxItem[], colorClass: string, bgClass: string, badgeClass: string) => (
+        <div className="mb-4 last:mb-0">
+             <h5 className={`text-[10px] font-bold ${colorClass} uppercase tracking-wider mb-2 flex items-center gap-2`}>
+                <span className={`w-2 h-2 rounded-full ${bgClass}`}></span>
+                {title}
+            </h5>
+            <div className="space-y-2">
+                {items.map((item, i) => (
+                    <div key={i} className="bg-[#18181b] border border-white/10 rounded-lg p-3">
+                        <div className="flex justify-between items-start mb-1.5 gap-3">
+                            <span className="font-bold text-gray-200 text-sm">{item.diagnosis}</span>
+                            <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border ${badgeClass} uppercase whitespace-nowrap`}>
+                                {normalizeConfidence(item.confidence)}
+                            </span>
+                        </div>
+                        <p className="text-xs text-gray-400 leading-relaxed">
+                            {item.rationale}
+                        </p>
+                    </div>
+                ))}
+            </div>
+        </div>
+    );
+
+    return (
+        <div className="mt-4 pt-4 border-t border-white/10">
+            <div className="flex items-center gap-2 mb-4">
+                 <div className="p-1.5 bg-aivana-accent/20 rounded-md">
+                     <Icon name="diagnosis" className="w-4 h-4 text-aivana-accent" />
+                 </div>
+                 <h4 className="text-sm font-bold text-gray-100">Differential Diagnosis</h4>
+            </div>
+
+            <div className="space-y-4">
+                {grouped.High.length > 0 && renderSection('High Probability', grouped.High, 'text-green-400', 'bg-green-500', 'text-green-400 bg-green-900/20 border-green-500/30')}
+                {grouped.Medium.length > 0 && renderSection('Medium Probability', grouped.Medium, 'text-yellow-400', 'bg-yellow-500', 'text-yellow-400 bg-yellow-900/20 border-yellow-500/30')}
+                {grouped.Low.length > 0 && renderSection('Low Probability', grouped.Low, 'text-blue-400', 'bg-blue-500', 'text-blue-400 bg-blue-900/20 border-blue-500/30')}
+            </div>
+        </div>
+    );
+};
 
 const RenderLabAnalysis: React.FC<{ analysis: LabResultAnalysis }> = ({ analysis }) => {
     const getUrgencyClass = (urgency: LabParameter['urgency']) => {
@@ -145,8 +204,7 @@ const StructuredContent: React.FC<{ message: Message }> = ({ message }) => {
 
     switch (message.structuredData.type) {
         case 'ddx':
-            // Differential diagnosis is now only shown in the sidebar
-            return null;
+            return <RenderDdx items={message.structuredData.data} />;
         case 'lab':
             return <RenderLabAnalysis analysis={message.structuredData.data} />;
         case 'billing':
